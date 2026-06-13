@@ -8,7 +8,7 @@
     "npm": ">=11"
   },
   "dependencies": {
-    "pg": "8.13.1"
+    "pg": "8.21.0"
   },
   "scripts": {
     "runtime:check": "node scripts/check-runtime.mjs",
