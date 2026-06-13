@@ -1,0 +1,101 @@
+name: staging-gate
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "codex/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  production-like-staging:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Run release verification and disaster recovery drills
+        run: npm run verify:release
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+      - name: Generate isolated staging credentials
+        shell: bash
+        run: |
+          POSTGRES_PASSWORD="$(node -e "console.log(require('crypto').randomBytes(18).toString('hex'))")"
+          STAGING_PASSWORD="Sasha$(node -e "console.log(require('crypto').randomBytes(12).toString('hex'))")A1!"
+          MASTER_KEY="$(node -e "console.log(require('crypto').randomBytes(32).toString('base64'))")"
+          DATA_KEY="$(node -e "console.log(require('crypto').randomBytes(32).toString('base64'))")"
+          echo "::add-mask::$POSTGRES_PASSWORD"
+          echo "::add-mask::$STAGING_PASSWORD"
+          echo "::add-mask::$MASTER_KEY"
+          echo "::add-mask::$DATA_KEY"
+          {
+            echo "SASHA_STAGING_POSTGRES_PASSWORD=$POSTGRES_PASSWORD"
+            echo "SASHA_STAGING_PASSWORD=$STAGING_PASSWORD"
+            echo "SASHA_STAGING_MASTER_KEY=$MASTER_KEY"
+            echo "SASHA_STAGING_DATA_KEY=$DATA_KEY"
+          } >> "$GITHUB_ENV"
+      - name: Start PostgreSQL, ClamAV, app, and HTTPS proxy
+        run: docker compose -f deploy/staging/compose.yml up --build --detach
+      - name: Verify PostgreSQL migrations, encryption, and key rotation
+        run: >-
+          docker compose -f deploy/staging/compose.yml exec -T app
+          node scripts/test-postgresql-integration.mjs
+      - name: Verify real ClamAV clean and infected scans
+        run: >-
+          docker compose -f deploy/staging/compose.yml exec -T app
+          node scripts/test-clamav-integration.mjs
+      - name: Verify HTTPS, Secure Cookie, PostgreSQL, and private attachments
+        env:
+          SASHA_STAGING_ALLOW_SELF_SIGNED: "true"
+          SASHA_STAGING_BASE_URL: https://localhost:8443
+          SASHA_STAGING_USERNAME: staging.manager
+        run: node scripts/test-staging-endpoint.mjs | tee staging-endpoint-report.json
+      - name: Audit encrypted staging data and attachment files
+        run: >-
+          docker compose -f deploy/staging/compose.yml exec -T app
+          node scripts/audit-data-protection.mjs
+      - name: Verify PostgreSQL logical backup and restore
+        shell: bash
+        run: |
+          docker compose -f deploy/staging/compose.yml exec -T postgres \
+            pg_dump -U sasha -d sasha --format=custom > staging-postgresql.dump
+          docker compose -f deploy/staging/compose.yml exec -T postgres \
+            dropdb -U sasha --if-exists sasha_restore
+          docker compose -f deploy/staging/compose.yml exec -T postgres \
+            createdb -U sasha sasha_restore
+          cat staging-postgresql.dump | docker compose -f deploy/staging/compose.yml exec -T postgres \
+            pg_restore -U sasha -d sasha_restore --exit-on-error
+          USERS="$(docker compose -f deploy/staging/compose.yml exec -T postgres \
+            psql -U sasha -d sasha_restore -Atc 'SELECT count(*) FROM users')"
+          ATTACHMENTS="$(docker compose -f deploy/staging/compose.yml exec -T postgres \
+            psql -U sasha -d sasha_restore -Atc 'SELECT count(*) FROM attachments')"
+          test "$USERS" -ge 1
+          test "$ATTACHMENTS" -ge 1
+          rm -f staging-postgresql.dump
+      - name: Upload staging validation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-validation-report
+          path: staging-endpoint-report.json
+          if-no-files-found: warn
+      - name: Show service logs after failure
+        if: failure()
+        run: docker compose -f deploy/staging/compose.yml logs --no-color
+      - name: Stop staging services
+        if: always()
+        run: docker compose -f deploy/staging/compose.yml down --volumes

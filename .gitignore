@@ -1,0 +1,13 @@
+.data/
+.audit-path
+.tmp*
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+coverage/
+backups/
+node_modules/
+outputs/
+*.key
+*.sashabak
+deploy/staging/.env

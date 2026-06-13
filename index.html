@@ -1,0 +1,947 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="保險業務經理專用的客戶、行程、保單與情報管理工作台">
+  <meta name="theme-color" content="#102b3a">
+  <title>莎莎保險助理工作台</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/sasha-app.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;600;700&family=Noto+Serif+TC:wght@600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="auth-pending">
+  <section class="auth-gate" id="authGate" aria-live="polite">
+    <div class="auth-card">
+      <div class="auth-brand-mark">莎</div>
+      <p class="auth-kicker">SASHA INSURANCE WORKBENCH</p>
+      <h1 id="authTitle">莎莎保險助理工作台</h1>
+      <p class="auth-description" id="authDescription">正在確認工作台的安全狀態...</p>
+
+      <form id="setupForm" class="auth-form hidden">
+        <label>工作台名稱
+          <input name="organizationName" value="莎莎保險助理工作台" maxlength="200" required>
+        </label>
+        <label>主人名稱
+          <input name="displayName" value="張經理" maxlength="100" required>
+        </label>
+        <label>登入帳號
+          <input name="username" autocomplete="username" placeholder="zhang.manager" maxlength="100" required>
+        </label>
+        <label>設定密碼
+          <input name="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required>
+        </label>
+        <small>至少 12 個字元，並包含英文大寫、英文小寫與數字。</small>
+        <button type="submit" class="primary-button auth-submit">建立張經理帳號</button>
+      </form>
+
+      <form id="loginForm" class="auth-form hidden">
+        <label>登入帳號
+          <input name="username" autocomplete="username" maxlength="100" required autofocus>
+        </label>
+        <label>密碼
+          <input name="password" type="password" autocomplete="current-password" maxlength="128" required>
+        </label>
+        <label class="hidden" id="mfaLoginField">驗證碼或復原碼
+          <input name="mfaCode" autocomplete="one-time-code" maxlength="32" disabled>
+        </label>
+        <button type="submit" class="primary-button auth-submit">安全登入</button>
+      </form>
+      <p class="auth-message" id="authMessage" role="alert"></p>
+      <div class="auth-security-note">
+        <span data-icon="lock"></span>
+        <span>登入逾時、失敗鎖定與防偽請求保護已啟用。</span>
+      </div>
+    </div>
+  </section>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-mark">莎</div>
+        <div>
+          <strong>莎莎</strong>
+          <span>保險助理工作台</span>
+        </div>
+      </div>
+
+      <nav class="main-nav" aria-label="主要功能">
+        <button class="nav-item active" data-page="dashboard">
+          <span class="nav-icon" data-icon="grid"></span>
+          <span>今日總覽</span>
+        </button>
+        <button class="nav-item" data-page="calendar">
+          <span class="nav-icon" data-icon="calendar"></span>
+          <span>智慧行事曆</span>
+          <span class="nav-badge review-indicator" id="todayEventCount">3</span>
+        </button>
+        <button class="nav-item" data-page="policy">
+          <span class="nav-icon" data-icon="scan"></span>
+          <span>保單辨識</span>
+        </button>
+        <button class="nav-item" data-page="insights">
+          <span class="nav-icon" data-icon="newspaper"></span>
+          <span>情報週報</span>
+          <span class="nav-dot review-indicator" id="insightsUnreadDot"></span>
+        </button>
+        <button class="nav-item" data-page="products">
+          <span class="nav-icon" data-icon="compare"></span>
+          <span>商品比較</span>
+        </button>
+        <button class="nav-item" data-page="team">
+          <span class="nav-icon" data-icon="users"></span>
+          <span>團隊管理</span>
+        </button>
+        <button class="nav-item" data-page="customers">
+          <span class="nav-icon" data-icon="users"></span>
+          <span>客戶系統</span>
+        </button>
+        <button class="nav-item" data-page="documents">
+          <span class="nav-icon" data-icon="folder"></span>
+          <span>文件中心</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-spacer"></div>
+
+      <div class="weekly-card">
+        <div class="weekly-card-icon" data-icon="sparkle"></div>
+        <strong>每週情報已就緒</strong>
+        <p>本週共整理 28 則重點，約 6 分鐘讀完。</p>
+        <button class="text-button" data-go-page="insights">立即閱讀 <span>→</span></button>
+      </div>
+
+      <div class="profile">
+        <div class="avatar">張</div>
+        <div>
+          <strong>張經理</strong>
+          <span>專業顧問方案</span>
+        </div>
+        <button class="icon-button small" aria-label="登出工作台" id="logoutButton" data-icon="lock"></button>
+        <button class="icon-button small" aria-label="開啟設定" id="settingsButton" data-icon="more"></button>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button class="icon-button menu-button" id="menuButton" aria-label="開啟選單" data-icon="menu"></button>
+          <div>
+            <p class="eyebrow" id="pageEyebrow">2026 年 6 月 11 日・星期四</p>
+            <h1 id="pageTitle">早安，張經理</h1>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <label class="global-search">
+            <span data-icon="search"></span>
+            <input type="search" id="globalSearch" placeholder="搜尋客戶、保單或文件">
+            <kbd>⌘ K</kbd>
+          </label>
+          <button class="icon-button notification-button" aria-label="通知" id="notificationButton">
+            <span data-icon="bell"></span>
+            <span class="notification-dot review-indicator" id="notificationUnreadDot"></span>
+          </button>
+          <button class="primary-button" data-open-event>
+            <span data-icon="plus"></span>
+            快速新增
+          </button>
+        </div>
+      </header>
+
+      <div class="content-area">
+        <section class="page active" id="dashboard-page">
+          <div class="hero-grid">
+            <article class="welcome-card">
+              <div class="welcome-content">
+                <div class="quote-heading">
+                  <span class="pill light">每日古典書籍語錄・08:00 更新</span>
+                  <span class="quote-date" id="dailyQuoteDate">今日</span>
+                </div>
+                <div class="quote-meta">
+                  <strong id="dailyQuoteSource">老子</strong>
+                  <span id="dailyQuoteWork">《道德經》第六十四章</span>
+                </div>
+                <div class="quote-section quote-original-section">
+                  <span class="quote-section-label">原文</span>
+                  <h2 class="quote-original" id="dailyQuoteOriginal">合抱之木，生於毫末；九層之臺，起於累土；千里之行，始於足下。</h2>
+                </div>
+                <div class="quote-section quote-translation-section">
+                  <span class="quote-section-label">白話意譯</span>
+                  <p id="dailyQuoteTranslation">再宏大的成果，都從微小的起點開始；再遙遠的路，也要從腳下第一步走起。</p>
+                </div>
+                <div class="quote-ai-note">
+                  <span data-icon="sparkle"></span>
+                  <p><strong>AI 精解</strong><span id="dailyQuoteExplanation">再大的目標，都能拆成今天可以完成的一小步。長期成果，正是由微小而持續的行動累積而成。</span></p>
+                </div>
+              </div>
+              <div class="hero-orbit" aria-hidden="true">
+                <div class="orbit orbit-one"></div>
+                <div class="orbit orbit-two"></div>
+                <div class="hero-monogram">莎</div>
+              </div>
+            </article>
+
+            <article class="focus-card">
+              <div class="card-heading">
+                <div>
+                  <span class="section-kicker">本月焦點</span>
+                  <h3>業務進度</h3>
+                </div>
+                <button class="icon-button small" aria-label="更多" data-icon="more"></button>
+              </div>
+              <div class="goal-ring" style="--progress: 72">
+                <div>
+                  <strong>72%</strong>
+                  <span>達成率</span>
+                </div>
+              </div>
+              <div class="goal-stats">
+                <div><span>已完成</span><strong>18 件</strong></div>
+                <div><span>本月目標</span><strong>25 件</strong></div>
+              </div>
+            </article>
+          </div>
+
+          <div class="metric-grid">
+            <article class="metric-card">
+              <div class="metric-icon amber" data-icon="calendar"></div>
+              <div>
+                <span>今日行程</span>
+                <strong id="metricTodayEvents">3</strong>
+                <small><b>2</b> 場客戶會談</small>
+              </div>
+            </article>
+            <article class="metric-card">
+              <div class="metric-icon blue" data-icon="users"></div>
+              <div>
+                <span>待追蹤客戶</span>
+                <strong>8</strong>
+                <small><b>3</b> 位需優先聯繫</small>
+              </div>
+            </article>
+            <article class="metric-card">
+              <div class="metric-icon green" data-icon="shield"></div>
+              <div>
+                <span>本月保單健檢</span>
+                <strong>12</strong>
+                <small><b>+20%</b> 較上個月</small>
+              </div>
+            </article>
+            <article class="metric-card">
+              <div class="metric-icon rose" data-icon="clock"></div>
+              <div>
+                <span>近期續保</span>
+                <strong>6</strong>
+                <small>30 天內到期</small>
+              </div>
+            </article>
+          </div>
+
+          <div class="dashboard-grid">
+            <article class="panel schedule-panel">
+              <div class="panel-heading">
+                <div>
+                  <span class="section-kicker">今日安排</span>
+                  <h3>接下來的行程</h3>
+                </div>
+                <button class="text-button dark" data-go-page="calendar">完整行事曆 <span>→</span></button>
+              </div>
+              <div class="timeline" id="dashboardTimeline"></div>
+            </article>
+
+            <article class="panel followup-panel">
+              <div class="panel-heading">
+                <div>
+                  <span class="section-kicker">客戶經營</span>
+                  <h3>優先追蹤</h3>
+                </div>
+                <span class="count-label">8 位待處理</span>
+              </div>
+              <div class="client-list">
+                <button class="client-row" data-client="王大明">
+                  <span class="client-avatar blue">王</span>
+                  <span class="client-info"><strong>王大明</strong><small>保單健檢・已 14 個月</small></span>
+                  <span class="priority high">優先</span>
+                  <span data-icon="chevron"></span>
+                </button>
+                <button class="client-row" data-client="陳美玲">
+                  <span class="client-avatar sand">陳</span>
+                  <span class="client-info"><strong>陳美玲</strong><small>醫療險續保・剩 12 天</small></span>
+                  <span class="priority medium">本週</span>
+                  <span data-icon="chevron"></span>
+                </button>
+                <button class="client-row" data-client="張家豪">
+                  <span class="client-avatar green">張</span>
+                  <span class="client-info"><strong>張家豪</strong><small>新生兒保障規劃</small></span>
+                  <span class="priority low">追蹤</span>
+                  <span data-icon="chevron"></span>
+                </button>
+                <button class="client-row" data-client="李雅雯">
+                  <span class="client-avatar rose">李</span>
+                  <span class="client-info"><strong>李雅雯</strong><small>家庭責任額度調整</small></span>
+                  <span class="priority low">追蹤</span>
+                  <span data-icon="chevron"></span>
+                </button>
+              </div>
+            </article>
+
+            <article class="panel brief-panel">
+              <div class="panel-heading">
+                <div>
+                  <span class="section-kicker">情報摘要</span>
+                  <h3>本週必讀</h3>
+                </div>
+                <button class="text-button dark" data-go-page="insights">查看週報 <span>→</span></button>
+              </div>
+              <div class="brief-feature">
+                <div class="brief-image">
+                  <span>WEEKLY<br>BRIEF</span>
+                  <small>06.08 — 06.14</small>
+                </div>
+                <div>
+                  <span class="news-category">國際財經</span>
+                  <h4>主要央行政策訊號與市場資金動向</h4>
+                  <p>本週利率、匯率與債券市場的三項變化，以及對保險規劃的溝通重點。</p>
+                  <div class="reading-meta"><span data-icon="clock"></span> 3 分鐘閱讀</div>
+                </div>
+              </div>
+              <div class="brief-links">
+                <button data-go-page="insights"><span class="dot amber"></span>保險局近期重要公告整理<span>5 則</span></button>
+                <button data-go-page="insights"><span class="dot green"></span>稅務與金融法規異動追蹤<span>3 則</span></button>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="page" id="calendar-page">
+          <div class="page-intro">
+            <div>
+              <span class="section-kicker">時間管理</span>
+              <h2>智慧行事曆</h2>
+              <p>集中管理客戶會談、續保提醒、生日關懷與團隊事項。</p>
+            </div>
+            <div class="intro-actions">
+              <button class="secondary-button" id="todayButton">回到今天</button>
+              <button class="primary-button" data-open-event><span data-icon="plus"></span> 新增行程</button>
+            </div>
+          </div>
+
+          <div class="calendar-layout">
+            <aside class="calendar-sidebar panel">
+              <div class="mini-date-card">
+                <span id="miniMonth">6月</span>
+                <strong id="miniDay">11</strong>
+                <small>星期四</small>
+              </div>
+              <div class="quick-section">
+                <h4>快速建立</h4>
+                <button class="quick-template" data-template="客戶會談"><span class="template-icon blue" data-icon="users"></span><span><strong>客戶會談</strong><small>預設 60 分鐘</small></span></button>
+                <button class="quick-template" data-template="續保提醒"><span class="template-icon amber" data-icon="refresh"></span><span><strong>續保提醒</strong><small>提前 30 天通知</small></span></button>
+                <button class="quick-template" data-template="生日關懷"><span class="template-icon rose" data-icon="gift"></span><span><strong>生日關懷</strong><small>當天上午提醒</small></span></button>
+                <button class="quick-template" data-template="團隊會議"><span class="template-icon green" data-icon="briefcase"></span><span><strong>團隊會議</strong><small>預設 45 分鐘</small></span></button>
+              </div>
+              <div class="calendar-legend">
+                <h4>行程分類</h4>
+                <label><span class="legend-dot blue"></span><input type="checkbox" checked data-calendar-filter="meeting"> 客戶會談</label>
+                <label><span class="legend-dot amber"></span><input type="checkbox" checked data-calendar-filter="renewal"> 續保提醒</label>
+                <label><span class="legend-dot rose"></span><input type="checkbox" checked data-calendar-filter="care"> 客戶關懷</label>
+                <label><span class="legend-dot green"></span><input type="checkbox" checked data-calendar-filter="team"> 團隊事項</label>
+              </div>
+            </aside>
+
+            <article class="calendar-main panel">
+              <div class="calendar-toolbar">
+                <div class="month-nav">
+                  <button class="icon-button small" id="prevMonth" aria-label="上個月" data-icon="chevron-left"></button>
+                  <h3 id="calendarMonthTitle">2026 年 6 月</h3>
+                  <button class="icon-button small" id="nextMonth" aria-label="下個月" data-icon="chevron"></button>
+                </div>
+                <div class="view-switch">
+                  <button class="active">月</button>
+                  <button disabled>週</button>
+                  <button disabled>日</button>
+                </div>
+              </div>
+              <div class="calendar-weekdays">
+                <span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span>
+              </div>
+              <div class="calendar-grid" id="calendarGrid"></div>
+            </article>
+          </div>
+        </section>
+
+        <section class="page" id="policy-page">
+          <div class="page-intro">
+            <div>
+              <span class="section-kicker">AI 保單整理</span>
+              <h2>拍照，快速建立保障全貌</h2>
+              <p>上傳客戶現有保單，辨識後校正欄位並保存至客戶檔案。</p>
+            </div>
+            <div class="privacy-note"><span data-icon="lock"></span><span><strong>隱私優先</strong><small>正式版可設定辨識後即刪除原圖</small></span></div>
+          </div>
+
+          <div class="policy-workspace">
+            <article class="upload-panel panel" id="uploadPanel">
+              <div class="step-label"><span>1</span> 上傳保單圖片</div>
+              <label class="drop-zone" id="dropZone">
+                <input type="file" id="policyFile" accept="image/*" capture="environment">
+                <span class="upload-icon" data-icon="camera"></span>
+                <strong>拍照或拖曳保單至此</strong>
+                <p>支援 JPG、PNG，建議單張不超過 10 MB</p>
+                <span class="secondary-button">選擇圖片</span>
+              </label>
+              <div class="upload-tips">
+                <strong>提高辨識準確度</strong>
+                <div><span data-icon="check"></span>保持紙張平整、光線均勻</div>
+                <div><span data-icon="check"></span>完整拍攝保單首頁與保障明細</div>
+                <div><span data-icon="check"></span>避免反光、陰影及手指遮擋</div>
+              </div>
+            </article>
+
+            <article class="scan-panel panel">
+              <div class="step-label"><span>2</span> 確認辨識內容</div>
+              <div class="empty-scan" id="emptyScan">
+                <div class="document-outline">
+                  <span data-icon="scan"></span>
+                </div>
+                <strong>等待保單圖片</strong>
+                <p>上傳後會在這裡顯示圖片預覽與辨識進度。</p>
+              </div>
+              <div class="scan-content hidden" id="scanContent">
+                <div class="image-preview-wrap">
+                  <img id="policyPreview" alt="已上傳的保單">
+                  <div class="scan-line" id="scanLine"></div>
+                  <span class="demo-chip">辨識示範模式</span>
+                </div>
+                <div class="scan-status">
+                  <div><strong id="scanStatusText">正在準備辨識</strong><span id="scanPercent">0%</span></div>
+                  <div class="progress-track"><span id="scanProgress"></span></div>
+                  <p id="scanHint">正在檢查圖片清晰度…</p>
+                </div>
+              </div>
+            </article>
+          </div>
+
+          <article class="result-panel panel hidden" id="resultPanel">
+            <div class="panel-heading">
+              <div>
+                <span class="section-kicker">辨識結果</span>
+                <h3>請核對保單資料</h3>
+              </div>
+              <div class="confidence"><span data-icon="check-circle"></span>平均可信度 <strong>92%</strong></div>
+            </div>
+            <form id="policyForm">
+              <div class="form-grid">
+                <label>客戶姓名<select name="customerId" id="policyCustomerSelect" required></select></label>
+                <label>保險公司<input name="company" value="示範人壽" required></label>
+                <label>保單號碼<input name="policyNumber" value="TW-2026-061188"></label>
+                <label>險種<select name="type"><option>終身壽險</option><option>醫療險</option><option>意外險</option><option>年金險</option><option>投資型保險</option></select></label>
+                <label>契約始期<input name="startDate" type="date" value="2021-08-15"></label>
+                <label>繳費年期<input name="paymentYears" value="20 年"></label>
+                <label>主約保額<input name="coverage" value="2,000,000"></label>
+                <label>年繳保費<input name="premium" value="48,600"></label>
+              </div>
+              <label class="full-label">保障摘要<textarea name="summary" rows="3">身故保險金 200 萬元；住院日額 2,000 元；手術醫療最高 10 萬元；意外失能最高 300 萬元。</textarea></label>
+              <div class="form-actions">
+                <p><span data-icon="info"></span>所有辨識欄位都應以保單正本再次核對。</p>
+                <div>
+                  <button type="button" class="secondary-button" id="resetPolicy">重新上傳</button>
+                  <button type="submit" class="primary-button"><span data-icon="save"></span> 儲存至客戶檔案</button>
+                </div>
+              </div>
+            </form>
+          </article>
+
+          <article class="saved-policies panel">
+            <div class="panel-heading">
+              <div>
+                <span class="section-kicker">客戶資料庫</span>
+                <h3>最近整理的保單</h3>
+              </div>
+              <span class="count-label" id="policyCountLabel">3 份資料</span>
+            </div>
+            <div class="policy-table-wrap">
+              <table>
+                <thead><tr><th>客戶</th><th>保險公司</th><th>險種</th><th>保額</th><th>年繳保費</th><th>更新日期</th></tr></thead>
+                <tbody id="policyTableBody"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <section class="page" id="insights-page">
+          <div class="page-intro">
+            <div>
+              <span class="section-kicker">每週情報中心</span>
+              <h2>把複雜資訊，變成客戶聽得懂的重點</h2>
+              <p>追蹤國際財經、台灣保險市場，以及金融、保險與稅務法規更新。</p>
+            </div>
+            <div class="intro-actions">
+              <span class="last-updated" id="lastUpdated"><span data-icon="refresh"></span> 最後整理：6 月 8 日 08:30</span>
+              <button class="primary-button" id="refreshInsights"><span data-icon="sparkle"></span> 立即更新</button>
+            </div>
+          </div>
+
+          <div class="source-strip">
+            <div><span data-icon="globe"></span><span><strong>可信來源</strong><small>優先官方與主要財經媒體</small></span></div>
+            <div><span data-icon="filter"></span><span><strong>去除雜訊</strong><small>聚焦與客戶規劃相關資訊</small></span></div>
+            <div><span data-icon="message"></span><span><strong>顧問話術</strong><small>每則附客戶溝通建議</small></span></div>
+          </div>
+
+          <div class="insight-tabs" role="tablist">
+            <button class="active" data-insight-tab="global">國際財經 <span>8</span></button>
+            <button data-insight-tab="taiwan">國內財經保險 <span>12</span></button>
+            <button data-insight-tab="regulation">法規更新 <span>8</span></button>
+          </div>
+
+          <div class="insight-content active" data-insight-content="global">
+            <article class="lead-story panel">
+              <div class="lead-visual global-visual">
+                <span class="visual-label">GLOBAL VIEW</span>
+                <div class="line-chart" aria-hidden="true">
+                  <svg viewBox="0 0 400 150"><path d="M0 120 C50 90, 70 130, 120 86 S200 115, 250 58 S330 70, 400 25"/><path class="fill" d="M0 120 C50 90, 70 130, 120 86 S200 115, 250 58 S330 70, 400 25 L400 150 L0 150 Z"/></svg>
+                </div>
+              </div>
+              <div class="lead-copy">
+                <div class="story-meta"><span class="news-category">本週主題</span><span>6 分鐘深度摘要</span></div>
+                <h3>利率環境、匯率波動與資產配置：本週三個觀察</h3>
+                <p>市場焦點持續圍繞利率政策與資金流向。對保險顧問而言，重點不是預測短期漲跌，而是協助客戶重新確認風險承受度、保費支付能力與長期目標。</p>
+                <div class="advisor-note">
+                  <span data-icon="message"></span>
+                  <div><strong>客戶溝通建議</strong><p>可先詢問：「最近的市場波動，有沒有讓您更在意資產穩定或家庭現金流？」再銜接保障與資產配置檢視。</p></div>
+                </div>
+              </div>
+            </article>
+            <div class="story-grid">
+              <article class="story-card panel"><div class="story-number">01</div><span class="news-category">利率</span><h4>主要央行政策訊號持續分歧</h4><p>觀察降息時程與債券殖利率變化，避免用單一市場情境做長期承諾。</p><div class="story-footer"><span>Reuters・示範摘要</span><button data-open-source="https://www.reuters.com/markets/">來源</button></div></article>
+              <article class="story-card panel"><div class="story-number">02</div><span class="news-category">匯率</span><h4>美元與亞洲貨幣波動加大</h4><p>外幣保單說明應同步呈現匯率風險、繳費幣別與未來使用需求。</p><div class="story-footer"><span>中央銀行・示範摘要</span><button data-open-source="https://www.cbc.gov.tw/">來源</button></div></article>
+              <article class="story-card panel"><div class="story-number">03</div><span class="news-category">市場</span><h4>長期配置重新重視現金流</h4><p>退休規劃可用分階段現金流情境，取代只看單一報酬率的比較方式。</p><div class="story-footer"><span>IMF・示範摘要</span><button data-open-source="https://www.imf.org/">來源</button></div></article>
+            </div>
+          </div>
+
+          <div class="insight-content" data-insight-content="taiwan">
+            <div class="story-grid wide">
+              <article class="story-card panel"><div class="story-number">01</div><span class="news-category">保險市場</span><h4>壽險業商品與通路動態追蹤</h4><p>整理近期市場商品方向、宣告利率資訊與通路溝通注意事項。</p><div class="story-footer"><span>壽險公會・示範摘要</span><button data-open-source="https://www.lia-roc.org.tw/">官方網站</button></div></article>
+              <article class="story-card panel"><div class="story-number">02</div><span class="news-category">金融監理</span><h4>金融監督管理委員會最新公告</h4><p>以與保險招攬、商品銷售及消費者權益直接相關的公告為優先。</p><div class="story-footer"><span>金管會・官方來源</span><button data-open-source="https://www.fsc.gov.tw/">官方網站</button></div></article>
+              <article class="story-card panel"><div class="story-number">03</div><span class="news-category">總體經濟</span><h4>台灣景氣、物價與家庭消費觀察</h4><p>將經濟數據轉譯成家庭保費負擔與保障調整的實務提醒。</p><div class="story-footer"><span>主計總處・示範摘要</span><button data-open-source="https://www.dgbas.gov.tw/">官方網站</button></div></article>
+              <article class="story-card panel"><div class="story-number">04</div><span class="news-category">產險市場</span><h4>住宅、車險與責任風險重點</h4><p>追蹤產險市場常見風險與消費者投保時容易忽略的保障範圍。</p><div class="story-footer"><span>產險公會・示範摘要</span><button data-open-source="https://www.nlia.org.tw/">官方網站</button></div></article>
+            </div>
+          </div>
+
+          <div class="insight-content" data-insight-content="regulation">
+            <div class="regulation-list">
+              <article class="regulation-item panel"><div class="reg-date"><strong>08</strong><span>JUN</span></div><div class="reg-copy"><div><span class="news-category">保險法規</span><span class="status-chip review">需檢視</span></div><h4>保險業招攬及核保相關規範更新追蹤</h4><p>可能影響招攬文件、適合度評估與客戶說明流程。此處為功能示範，正式使用前應連結官方法規與內部法遵審核。</p><div class="impact"><strong>可能影響：</strong>要保文件、銷售流程、業務教育訓練</div></div><button class="secondary-button" data-open-source="https://law.moj.gov.tw/">查看法規</button></article>
+              <article class="regulation-item panel"><div class="reg-date"><strong>05</strong><span>JUN</span></div><div class="reg-copy"><div><span class="news-category">稅務</span><span class="status-chip watch">持續關注</span></div><h4>所得稅與遺產贈與稅解釋令動態</h4><p>家庭傳承與保險給付相關討論，應以個案事實及最新函釋為準，必要時與會計師、律師共同服務。</p><div class="impact"><strong>可能影響：</strong>傳承規劃、受益人安排、資金來源說明</div></div><button class="secondary-button" data-open-source="https://www.mof.gov.tw/">財政部</button></article>
+              <article class="regulation-item panel"><div class="reg-date"><strong>02</strong><span>JUN</span></div><div class="reg-copy"><div><span class="news-category">金融消保</span><span class="status-chip info">資訊</span></div><h4>金融消費者保護與公平待客資訊</h4><p>整理客戶權益、申訴案例與高齡客戶服務提醒，協助團隊檢視說明與留存紀錄。</p><div class="impact"><strong>可能影響：</strong>客戶說明、關懷提問、服務紀錄</div></div><button class="secondary-button" data-open-source="https://www.foi.org.tw/">評議中心</button></article>
+            </div>
+          </div>
+
+          <div class="disclaimer"><span data-icon="info"></span>情報中心內容僅供業務研究與客戶溝通準備，不構成投資、稅務或法律意見；正式決策請查閱官方原文並諮詢專業人士。</div>
+        </section>
+
+        <section class="page" id="products-page">
+          <div class="page-intro">
+            <div>
+              <span class="section-kicker">市場商品庫</span>
+              <h2>快速篩選，更有依據地比較</h2>
+              <p>用一致欄位整理各公司商品特色；示範資料不代表即時銷售內容。</p>
+            </div>
+            <button class="primary-button" id="compareSelected"><span data-icon="compare"></span> 比較已選商品 <span id="compareCount">0</span></button>
+          </div>
+
+          <article class="product-filter panel">
+            <label class="wide-search"><span data-icon="search"></span><input id="productSearch" placeholder="搜尋公司、商品名稱或特色"></label>
+            <select id="productTypeFilter"><option value="all">所有險種</option><option value="醫療險">醫療險</option><option value="壽險">壽險</option><option value="重大傷病險">重大傷病險</option><option value="意外險">意外險</option><option value="年金險">年金險</option></select>
+            <select id="productCompanyFilter"><option value="all">所有公司</option><option>國泰人壽</option><option>富邦人壽</option><option>南山人壽</option><option>新光人壽</option><option>台灣人壽</option><option>全球人壽</option></select>
+            <button class="secondary-button" id="resetProductFilters">清除篩選</button>
+          </article>
+
+          <div class="product-summary"><span>共 <strong id="productResultCount">6</strong> 項示範商品</span><span class="data-note"><span data-icon="info"></span>資料更新：2026/06/08・實際內容以各公司官方文件為準</span></div>
+          <div class="product-grid" id="productGrid"></div>
+        </section>
+
+        <section class="page" id="team-page">
+          <div class="page-intro">
+            <div>
+              <span class="section-kicker">團隊營運中心</span>
+              <h2>看見進度，也照顧每位夥伴</h2>
+              <p>集中管理團隊成員、每月目標、重要待辦與培訓活動。</p>
+            </div>
+            <button class="primary-button" id="openMemberModal"><span data-icon="plus"></span> 新增團隊成員</button>
+          </div>
+
+          <div class="team-metric-grid">
+            <article class="team-metric panel">
+              <span class="team-metric-icon blue" data-icon="users"></span>
+              <div><span>團隊人數</span><strong id="teamMemberCount">0</strong><small>含張經理</small></div>
+            </article>
+            <article class="team-metric panel">
+              <span class="team-metric-icon green" data-icon="check-circle"></span>
+              <div><span>本月達成率</span><strong id="teamAchievementRate">0%</strong><small id="teamAchievementNote">統計中</small></div>
+            </article>
+            <article class="team-metric panel">
+              <span class="team-metric-icon amber" data-icon="briefcase"></span>
+              <div><span>本月成交</span><strong id="teamClosedCount">0</strong><small id="teamTargetNote">團隊目標 0 件</small></div>
+            </article>
+            <article class="team-metric panel">
+              <span class="team-metric-icon rose" data-icon="clock"></span>
+              <div><span>未完成待辦</span><strong id="teamPendingCount">0</strong><small>需要持續追蹤</small></div>
+            </article>
+          </div>
+
+          <div class="team-layout">
+            <article class="panel team-members-panel">
+              <div class="panel-heading">
+                <div><span class="section-kicker">成員表現</span><h3>本月團隊進度</h3></div>
+                <span class="count-label" id="activeMemberLabel">0 位成員</span>
+              </div>
+              <div class="team-member-list" id="teamMemberList"></div>
+            </article>
+
+            <article class="panel team-goal-panel">
+              <div class="panel-heading">
+                <div><span class="section-kicker">團隊目標</span><h3>本月共同目標</h3></div>
+                <button class="icon-button small" id="editTeamGoal" aria-label="調整目標" data-icon="more"></button>
+              </div>
+              <div class="team-goal-ring" id="teamGoalRing" style="--team-progress: 0">
+                <div><strong id="teamGoalPercent">0%</strong><span>整體達成</span></div>
+              </div>
+              <div class="team-goal-details">
+                <div><span>已完成</span><strong id="teamGoalCurrent">0 件</strong></div>
+                <div><span>目標</span><strong id="teamGoalTarget">0 件</strong></div>
+              </div>
+              <p class="team-encouragement" id="teamEncouragement">每一件穩健完成的服務，都在累積團隊的信任。</p>
+            </article>
+
+            <article class="panel team-tasks-panel">
+              <div class="panel-heading">
+                <div><span class="section-kicker">協作待辦</span><h3>團隊任務</h3></div>
+                <button class="text-button dark" id="addTeamTask">新增任務 <span>＋</span></button>
+              </div>
+              <div class="team-task-list" id="teamTaskList"></div>
+            </article>
+
+            <article class="panel team-activity-panel">
+              <div class="panel-heading">
+                <div><span class="section-kicker">近期安排</span><h3>培訓與活動</h3></div>
+                <button class="text-button dark" data-go-page="calendar">前往行事曆 <span>→</span></button>
+              </div>
+              <div class="team-activity-list">
+                <div class="team-activity"><span class="activity-date"><strong>12</strong><small>JUN</small></span><div><strong>醫療保障案例研討</strong><small>09:30・線上會議</small></div><span class="status-chip info">培訓</span></div>
+                <div class="team-activity"><span class="activity-date"><strong>18</strong><small>JUN</small></span><div><strong>新人聯合陪訪</strong><small>14:00・台北辦公室</small></div><span class="status-chip watch">陪訪</span></div>
+                <div class="team-activity"><span class="activity-date"><strong>25</strong><small>JUN</small></span><div><strong>月度績效回顧</strong><small>16:30・第二會議室</small></div><span class="status-chip review">會議</span></div>
+              </div>
+            </article>
+          </div>
+
+          <article class="panel account-management-panel hidden" id="accountManagementPanel">
+            <div class="panel-heading">
+              <div>
+                <span class="section-kicker">登入與權限</span>
+                <h3>成員帳號管理</h3>
+              </div>
+              <button class="primary-button" id="openAccountModal">
+                <span data-icon="plus"></span> 新增登入帳號
+              </button>
+            </div>
+            <p class="account-management-note">團隊名單用於績效管理；登入帳號則決定誰可以開啟客戶與保單資料。</p>
+            <div class="account-list" id="accountList"></div>
+          </article>
+        </section>
+
+        <section class="page" id="customers-page">
+          <div class="page-intro">
+            <div>
+              <span class="section-kicker">客戶關係中心</span>
+              <h2>每一次聯繫，都有清楚的下一步</h2>
+              <p>管理客戶基本資料、保障需求、服務階段與下一次追蹤日期。</p>
+            </div>
+            <button class="primary-button" id="openCustomerModal"><span data-icon="plus"></span> 新增客戶</button>
+          </div>
+
+          <div class="customer-metric-grid">
+            <article class="customer-metric panel">
+              <span class="team-metric-icon blue" data-icon="users"></span>
+              <div><span>客戶總數</span><strong id="customerTotalCount">0</strong><small>本機客戶資料庫</small></div>
+            </article>
+            <article class="customer-metric panel">
+              <span class="team-metric-icon rose" data-icon="clock"></span>
+              <div><span>優先追蹤</span><strong id="customerPriorityCount">0</strong><small>已逾期或即將到期</small></div>
+            </article>
+            <article class="customer-metric panel">
+              <span class="team-metric-icon amber" data-icon="calendar"></span>
+              <div><span>7 日內聯繫</span><strong id="customerUpcomingCount">0</strong><small>近期服務安排</small></div>
+            </article>
+            <article class="customer-metric panel">
+              <span class="team-metric-icon green" data-icon="gift"></span>
+              <div><span>本月生日</span><strong id="customerBirthdayCount">0</strong><small>記得主動關懷</small></div>
+            </article>
+          </div>
+
+          <article class="customer-filter panel">
+            <label class="wide-search"><span data-icon="search"></span><input id="customerSearch" placeholder="搜尋姓名、電話、需求或負責顧問"></label>
+            <select id="customerStageFilter">
+              <option value="all">所有服務階段</option>
+              <option value="新名單">新名單</option>
+              <option value="需求訪談">需求訪談</option>
+              <option value="規劃中">規劃中</option>
+              <option value="已成交">已成交</option>
+              <option value="持續服務">持續服務</option>
+            </select>
+            <select id="customerOwnerFilter"><option value="all">所有負責顧問</option></select>
+            <button class="secondary-button" id="resetCustomerFilters">清除篩選</button>
+          </article>
+
+          <div class="customer-summary">
+            <span>目前顯示 <strong id="customerResultCount">0</strong> 位客戶</span>
+            <span class="data-note"><span data-icon="lock"></span>資料保存在這台裝置的瀏覽器中</span>
+          </div>
+
+          <article class="panel customer-list-panel">
+            <div class="customer-table-wrap">
+              <table class="customer-table">
+                <thead>
+                  <tr><th>客戶</th><th>保障需求</th><th>負責顧問</th><th>服務階段</th><th>下次追蹤</th><th>保單</th><th></th></tr>
+                </thead>
+                <tbody id="customerTableBody"></tbody>
+              </table>
+            </div>
+            <div class="customer-card-list" id="customerCardList"></div>
+          </article>
+
+          <div class="disclaimer"><span data-icon="lock"></span>客戶資料屬個人資料。系統已啟用登入、MFA、角色權限、組織隔離與備份基礎；正式上線仍須完成客戶欄位加密、保存期限與刪除政策。</div>
+        </section>
+
+        <section class="page" id="documents-page">
+          <div class="page-intro">
+            <div>
+              <span class="section-kicker">官方文件入口</span>
+              <h2>建議書、要保書與公司最新消息</h2>
+              <p>集中常用官方入口，減少在不同公司網站間反覆搜尋。</p>
+            </div>
+            <button class="secondary-button" id="checkLinks"><span data-icon="refresh"></span> 檢查連結狀態</button>
+          </div>
+
+          <article class="document-hero">
+            <div>
+              <span class="pill light">常用功能</span>
+              <h3>找文件，不必再開十幾個分頁</h3>
+              <p>選擇公司與文件類型，快速前往官方下載或查詢頁面。</p>
+            </div>
+            <label class="document-search"><span data-icon="search"></span><input id="documentSearch" placeholder="搜尋保險公司或文件名稱"></label>
+          </article>
+
+          <div class="document-tabs">
+            <button class="active" data-doc-filter="all">全部</button>
+            <button data-doc-filter="news">最新消息</button>
+            <button data-doc-filter="proposal">建議書</button>
+            <button data-doc-filter="application">要保書</button>
+            <button data-doc-filter="product">商品文件</button>
+          </div>
+
+          <div class="company-directory" id="companyDirectory"></div>
+          <div class="disclaimer"><span data-icon="shield"></span>文件入口連至各公司公開網站。部分建議書或要保文件可能僅供登入後下載，請依公司授權與內部規範使用。</div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="eventModal" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="eventModalTitle">
+      <div class="modal-header">
+        <div><span class="section-kicker">快速設定</span><h3 id="eventModalTitle">新增行程</h3></div>
+        <button class="icon-button" data-close-modal aria-label="關閉" data-icon="close"></button>
+      </div>
+      <form id="eventForm">
+        <input type="hidden" name="id" id="eventId">
+        <input type="hidden" name="version" id="eventVersion">
+        <label>行程名稱<input name="title" id="eventTitle" placeholder="例如：王先生家庭保障檢視" required></label>
+        <div class="form-grid two">
+          <label>日期<input name="date" id="eventDate" type="date" required></label>
+          <label>開始時間<input name="time" id="eventTime" type="time" required></label>
+          <label>分類<select name="category" id="eventCategory"><option value="meeting">客戶會談</option><option value="renewal">續保提醒</option><option value="care">客戶關懷</option><option value="team">團隊事項</option></select></label>
+          <label>提醒<select name="reminder"><option>15 分鐘前</option><option>1 小時前</option><option>1 天前</option><option>3 天前</option></select></label>
+          <label>關聯客戶<select name="customerId" id="eventCustomerSelect"><option value="">不指定客戶</option></select></label>
+          <label>行程狀態<select name="status" id="eventStatus"><option value="scheduled">待進行</option><option value="completed">已完成</option><option value="cancelled">已取消</option></select></label>
+        </div>
+        <label>地點／聯繫方式<input name="detail" placeholder="公司、會面地點、電話或線上會議"></label>
+        <label>備註<textarea name="note" rows="3" placeholder="會談目標、需準備資料或後續事項"></textarea></label>
+        <div class="modal-actions event-modal-actions">
+          <button type="button" class="danger-button hidden" id="deleteEvent">刪除行程</button>
+          <span class="modal-action-spacer"></span>
+          <button type="button" class="secondary-button" data-close-modal>關閉</button>
+          <button type="submit" class="primary-button">儲存行程</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="compareModal" aria-hidden="true">
+    <div class="modal wide-modal" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div><span class="section-kicker">並排比較</span><h3>商品比較表</h3></div>
+        <button class="icon-button" data-close-compare aria-label="關閉" data-icon="close"></button>
+      </div>
+      <div id="comparisonTable" class="comparison-table"></div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="memberModal" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="memberModalTitle">
+      <div class="modal-header">
+        <div><span class="section-kicker">團隊成員</span><h3 id="memberModalTitle">新增團隊成員</h3></div>
+        <button class="icon-button" data-close-member aria-label="關閉" data-icon="close"></button>
+      </div>
+      <form id="memberForm">
+        <div class="form-grid two">
+          <label>姓名<input name="name" placeholder="例如：陳怡君" required></label>
+          <label>職級<select name="role"><option>業務主任</option><option>資深顧問</option><option>保險顧問</option><option>新人顧問</option></select></label>
+          <label>本月目標件數<input name="target" type="number" min="1" value="8" required></label>
+          <label>目前完成件數<input name="closed" type="number" min="0" value="0" required></label>
+        </div>
+        <label>主要發展方向<input name="specialty" placeholder="例如：家庭保障、退休規劃、企業保險"></label>
+        <div class="modal-actions">
+          <button type="button" class="secondary-button" data-close-member>取消</button>
+          <button type="submit" class="primary-button">加入團隊</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="accountModal" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="accountModalTitle">
+      <div class="modal-header">
+        <div>
+          <span class="section-kicker">安全帳號</span>
+          <h3 id="accountModalTitle">新增登入帳號</h3>
+        </div>
+        <button class="icon-button" data-close-account aria-label="關閉" data-icon="close"></button>
+      </div>
+      <form id="accountForm">
+        <div class="form-grid two">
+          <label>成員姓名
+            <input name="displayName" maxlength="100" placeholder="例如：陳怡君" required>
+          </label>
+          <label>登入帳號
+            <input name="username" maxlength="100" autocomplete="off" placeholder="例如：yi.jun" required>
+          </label>
+          <label>權限角色
+            <select name="role">
+              <option value="advisor">保險顧問</option>
+              <option value="manager">管理者</option>
+              <option value="viewer">唯讀成員</option>
+            </select>
+          </label>
+          <label>初始密碼
+            <input name="password" type="password" minlength="12" maxlength="128" autocomplete="new-password" required>
+          </label>
+        </div>
+        <p class="form-help">至少 12 個字元，並包含英文大寫、英文小寫與數字。請用安全方式交付給成員。</p>
+        <div class="modal-actions">
+          <button type="button" class="secondary-button" data-close-account>取消</button>
+          <button type="submit" class="primary-button">建立登入帳號</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="settingsModal" aria-hidden="true">
+    <div class="modal wide-modal" role="dialog" aria-modal="true" aria-labelledby="settingsModalTitle">
+      <div class="modal-header">
+        <div>
+          <span class="section-kicker">帳號安全</span>
+          <h3 id="settingsModalTitle">個人安全設定</h3>
+        </div>
+        <button class="icon-button" data-close-settings aria-label="關閉" data-icon="close"></button>
+      </div>
+
+      <div class="security-settings-grid">
+        <section class="security-setting-card">
+          <h4>變更登入密碼</h4>
+          <p>變更後，其他裝置的登入工作階段會立即失效。</p>
+          <form id="changePasswordForm">
+            <label>目前密碼<input name="currentPassword" type="password" autocomplete="current-password" required></label>
+            <label>新密碼<input name="newPassword" type="password" minlength="12" maxlength="128" autocomplete="new-password" required></label>
+            <label>再次輸入新密碼<input name="confirmPassword" type="password" minlength="12" maxlength="128" autocomplete="new-password" required></label>
+            <button type="submit" class="primary-button">更新密碼</button>
+          </form>
+        </section>
+
+        <section class="security-setting-card">
+          <div class="security-status-heading">
+            <div>
+              <h4>多因素驗證 MFA</h4>
+              <p>使用驗證器 App 產生每 30 秒更新的六位數驗證碼。</p>
+            </div>
+            <span class="status-chip info" id="mfaStatusChip">尚未啟用</span>
+          </div>
+
+          <form id="mfaSetupForm">
+            <label>確認目前密碼<input name="currentPassword" type="password" autocomplete="current-password" required></label>
+            <button type="submit" class="primary-button">開始設定 MFA</button>
+          </form>
+
+          <div class="mfa-setup-result hidden" id="mfaSetupResult">
+            <p><strong>1. 在驗證器 App 中新增帳號</strong></p>
+            <label>手動設定金鑰<input id="mfaSecret" readonly></label>
+            <p><strong>2. 將復原碼保存於安全位置</strong></p>
+            <div class="recovery-code-list" id="recoveryCodeList"></div>
+            <button type="button" class="secondary-button" id="downloadRecoveryCodes">下載復原碼</button>
+            <p class="form-help">復原碼只顯示這一次，每組只能使用一次。請勿存放於客戶資料或一般聊天訊息。</p>
+            <form id="mfaConfirmForm">
+              <label>3. 輸入驗證器顯示的六位數驗證碼<input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></label>
+              <button type="submit" class="primary-button">確認並啟用 MFA</button>
+            </form>
+          </div>
+
+          <form id="mfaDisableForm" class="hidden">
+            <label>目前密碼<input name="currentPassword" type="password" autocomplete="current-password" required></label>
+            <label>驗證碼或復原碼<input name="code" autocomplete="one-time-code" maxlength="32" required></label>
+            <button type="submit" class="danger-button">停用 MFA</button>
+          </form>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="customerModal" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="customerModalTitle">
+      <div class="modal-header">
+        <div><span class="section-kicker">客戶資料</span><h3 id="customerModalTitle">新增客戶</h3></div>
+        <button class="icon-button" data-close-customer aria-label="關閉" data-icon="close"></button>
+      </div>
+      <form id="customerForm">
+        <input type="hidden" name="id" id="customerId">
+        <input type="hidden" name="version" id="customerVersion">
+        <div class="form-grid two">
+          <label>客戶姓名<input name="name" placeholder="例如：王大明" required></label>
+          <label>手機號碼<input name="phone" type="tel" placeholder="09xx-xxx-xxx"></label>
+          <label>電子郵件<input name="email" type="email" placeholder="name@example.com"></label>
+          <label>生日<input name="birthday" type="date"></label>
+          <label>負責顧問<select name="ownerUserId" id="customerOwnerSelect" required></select></label>
+          <label>服務階段<select name="stage"><option>新名單</option><option>需求訪談</option><option>規劃中</option><option>已成交</option><option>持續服務</option></select></label>
+          <label>下次追蹤日期<input name="nextFollowUp" type="date"></label>
+          <label>現有保單數<input name="policyCount" type="number" min="0" value="0" readonly></label>
+        </div>
+        <label>主要保障需求<input name="needs" placeholder="例如：醫療保障、家庭責任、退休規劃"></label>
+        <label>服務備註<textarea name="note" rows="3" placeholder="家庭狀況、溝通偏好、下次聯繫重點"></textarea></label>
+        <div class="modal-actions customer-modal-actions">
+          <button type="button" class="danger-button hidden" id="deleteCustomer">刪除客戶</button>
+          <span class="modal-action-spacer"></span>
+          <button type="button" class="secondary-button" data-close-customer>取消</button>
+          <button type="submit" class="primary-button">儲存客戶資料</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="toast-container" id="toastContainer" aria-live="polite"></div>
+  <div class="mobile-overlay" id="mobileOverlay"></div>
+  <script src="data/daily-quote.js"></script>
+  <script src="data/weekly-insights.js"></script>
+  <script src="core.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

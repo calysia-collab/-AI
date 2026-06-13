@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#102b3a"/>
+  <circle cx="400" cy="96" r="120" fill="#183e51"/>
+  <rect x="144" y="168" width="224" height="176" rx="24" fill="#f7f1e7"/>
+  <text x="256" y="286" text-anchor="middle" font-family="serif" font-size="156" font-weight="700" fill="#102b3a">莎</text>
+  <circle cx="376" cy="368" r="54" fill="#c79c5e"/>
+  <path d="m352 369 16 16 33-37" fill="none" stroke="#102b3a" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

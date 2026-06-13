@@ -1,0 +1,19 @@
+{
+  "name": "莎莎保險助理工作台",
+  "short_name": "莎莎工作台",
+  "description": "張經理的客戶、行程、保單、團隊與情報管理工作台",
+  "lang": "zh-Hant",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f6f5",
+  "theme_color": "#102b3a",
+  "icons": [
+    {
+      "src": "icons/sasha-app.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

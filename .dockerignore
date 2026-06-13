@@ -1,0 +1,15 @@
+.data
+.git
+.github
+.tmp*
+backups
+coverage
+node_modules
+outputs
+deploy/staging/.env
+deploy/external-staging.env
+*.key
+*.sashabak
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

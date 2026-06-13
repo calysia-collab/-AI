@@ -1,0 +1,22 @@
+[Unit]
+Description=Sasha Insurance Workbench
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sasha
+Group=sasha
+WorkingDirectory=/opt/sasha-workbench
+EnvironmentFile=/etc/sasha-workbench/environment
+ExecStart=/usr/bin/node /opt/sasha-workbench/server.mjs
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/sasha-workbench
+
+[Install]
+WantedBy=multi-user.target

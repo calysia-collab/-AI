@@ -1,0 +1,5 @@
+{
+  "001_initial_schema.sql": "85423dec7e1473f76b818a6ca1eadcaa3ab3f80d9eaf593f4172bf60f6ad96c6",
+  "002_customer_owner_assignment.sql": "2a4b1e20acf4d22d830d0da917556d7350456b75c770fc11d74530fa6711b75b",
+  "003_data_protection_and_attachments.sql": "50a97e322c6c968b980ded24e40823c1df3a876141578eb0ea4c0280ad9ff05f"
+}

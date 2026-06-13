@@ -1,0 +1,91 @@
+name: sasha-staging
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: sasha
+      POSTGRES_PASSWORD: ${SASHA_STAGING_POSTGRES_PASSWORD:?Set SASHA_STAGING_POSTGRES_PASSWORD}
+      POSTGRES_USER: sasha
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sasha -d sasha"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  clamav:
+    image: clamav/clamav:${SASHA_CLAMAV_IMAGE_TAG:-1.4}
+    environment:
+      CLAMD_STARTUP_TIMEOUT: "600"
+    volumes:
+      - clamav-data:/var/lib/clamav
+
+  app:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    command:
+      - /bin/sh
+      - -c
+      - node scripts/bootstrap-owner.mjs && exec node server.mjs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clamav:
+        condition: service_started
+    environment:
+      HOST: 0.0.0.0
+      NODE_ENV: staging
+      PORT: "4173"
+      SASHA_ALLOW_INSECURE_REMOTE: "true"
+      SASHA_ATTACHMENT_ALLOW_UNSCANNED: "false"
+      SASHA_ATTACHMENT_DIR: /app/.data/attachments
+      SASHA_BOOTSTRAP_DISPLAY_NAME: Manager Zhang
+      SASHA_BOOTSTRAP_ENABLED: "true"
+      SASHA_BOOTSTRAP_ORGANIZATION: Sasha Insurance Workbench
+      SASHA_BOOTSTRAP_PASSWORD: ${SASHA_STAGING_PASSWORD:?Set SASHA_STAGING_PASSWORD}
+      SASHA_BOOTSTRAP_USERNAME: staging.manager
+      SASHA_CLAMD_HOST: clamav
+      SASHA_CLAMD_PORT: "3310"
+      SASHA_COOKIE_SECURE: "true"
+      SASHA_DATABASE_POOL_SIZE: "5"
+      SASHA_DATABASE_SSL: disable
+      SASHA_DATABASE_URL: postgresql://sasha:${SASHA_STAGING_POSTGRES_PASSWORD:?Set SASHA_STAGING_POSTGRES_PASSWORD}@postgres:5432/sasha
+      SASHA_DATA_KEY_ID: staging-v1
+      SASHA_DATA_KEYS: "{\"staging-v1\":\"${SASHA_STAGING_DATA_KEY:?Set SASHA_STAGING_DATA_KEY}\"}"
+      SASHA_MASTER_KEY: ${SASHA_STAGING_MASTER_KEY:?Set SASHA_STAGING_MASTER_KEY}
+      SASHA_TEST_DATABASE_SSL: disable
+      SASHA_TEST_DATABASE_URL: postgresql://sasha:${SASHA_STAGING_POSTGRES_PASSWORD:?Set SASHA_STAGING_POSTGRES_PASSWORD}@postgres:5432/sasha
+      SASHA_TRUST_PROXY: "true"
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -qO-
+        - http://127.0.0.1:4173/api/health
+      interval: 5s
+      timeout: 5s
+      retries: 60
+    volumes:
+      - attachment-data:/app/.data/attachments
+
+  proxy:
+    image: caddy:2-alpine
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "8443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  attachment-data:
+  caddy-config:
+  caddy-data:
+  clamav-data:
+  postgres-data:
