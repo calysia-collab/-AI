@@ -413,7 +413,7 @@
                 <div class="image-preview-wrap">
                   <img id="policyPreview" alt="已上傳的保單">
                   <div class="scan-line" id="scanLine"></div>
-                  <span class="demo-chip">辨識示範模式</span>
+                  <span class="demo-chip" id="ocrProviderChip">安全辨識工作</span>
                 </div>
                 <div class="scan-status">
                   <div><strong id="scanStatusText">正在準備辨識</strong><span id="scanPercent">0%</span></div>
@@ -430,9 +430,10 @@
                 <span class="section-kicker">辨識結果</span>
                 <h3>請核對保單資料</h3>
               </div>
-              <div class="confidence"><span data-icon="check-circle"></span>平均可信度 <strong>92%</strong></div>
+              <div class="confidence"><span data-icon="check-circle"></span>平均可信度 <strong id="ocrConfidence">--</strong></div>
             </div>
             <form id="policyForm">
+              <input type="hidden" id="ocrJobId" name="ocrJobId">
               <div class="form-grid">
                 <label>客戶姓名<select name="customerId" id="policyCustomerSelect" required></select></label>
                 <label>保險公司<input name="company" value="示範人壽" required></label>
@@ -448,7 +449,7 @@
                 <p><span data-icon="info"></span>所有辨識欄位都應以保單正本再次核對。</p>
                 <div>
                   <button type="button" class="secondary-button" id="resetPolicy">重新上傳</button>
-                  <button type="submit" class="primary-button"><span data-icon="save"></span> 儲存至客戶檔案</button>
+                  <button type="submit" class="primary-button" id="approveOcrButton"><span data-icon="save"></span> 確認並建立保單</button>
                 </div>
               </div>
             </form>
@@ -658,13 +659,16 @@
               <h2>每一次聯繫，都有清楚的下一步</h2>
               <p>管理客戶基本資料、保障需求、服務階段與下一次追蹤日期。</p>
             </div>
-            <button class="primary-button" id="openCustomerModal"><span data-icon="plus"></span> 新增客戶</button>
+            <div class="intro-actions">
+              <button class="secondary-button" id="openCustomerImport"><span data-icon="folder"></span> 批次匯入</button>
+              <button class="primary-button" id="openCustomerModal"><span data-icon="plus"></span> 新增客戶</button>
+            </div>
           </div>
 
           <div class="customer-metric-grid">
             <article class="customer-metric panel">
               <span class="team-metric-icon blue" data-icon="users"></span>
-              <div><span>客戶總數</span><strong id="customerTotalCount">0</strong><small>本機客戶資料庫</small></div>
+              <div><span>客戶總數</span><strong id="customerTotalCount">0</strong><small>正式加密客戶資料庫</small></div>
             </article>
             <article class="customer-metric panel">
               <span class="team-metric-icon rose" data-icon="clock"></span>
@@ -696,7 +700,7 @@
 
           <div class="customer-summary">
             <span>目前顯示 <strong id="customerResultCount">0</strong> 位客戶</span>
-            <span class="data-note"><span data-icon="lock"></span>資料保存在這台裝置的瀏覽器中</span>
+            <span class="data-note"><span data-icon="lock"></span>資料由伺服器加密保存並依帳號權限隔離</span>
           </div>
 
           <article class="panel customer-list-panel">
@@ -711,7 +715,7 @@
             <div class="customer-card-list" id="customerCardList"></div>
           </article>
 
-          <div class="disclaimer"><span data-icon="lock"></span>客戶資料屬個人資料。系統已啟用登入、MFA、角色權限、組織隔離與備份基礎；正式上線仍須完成客戶欄位加密、保存期限與刪除政策。</div>
+          <div class="disclaimer"><span data-icon="lock"></span>客戶資料屬個人資料。系統已啟用欄位加密、登入、MFA、角色權限、組織隔離與稽核紀錄；保存期限與刪除仍應依公司法遵政策執行。</div>
         </section>
 
         <section class="page" id="documents-page">
@@ -934,6 +938,72 @@
           <button type="submit" class="primary-button">儲存客戶資料</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="customerWorkspaceModal" aria-hidden="true">
+    <div class="modal workspace-modal" role="dialog" aria-modal="true" aria-labelledby="customerWorkspaceTitle">
+      <div class="modal-header">
+        <div>
+          <span class="section-kicker">客戶 360</span>
+          <h3 id="customerWorkspaceTitle">客戶完整服務紀錄</h3>
+          <p class="workspace-subtitle" id="customerWorkspaceSubtitle">正在載入客戶資料...</p>
+        </div>
+        <button class="icon-button" data-close-workspace aria-label="關閉" data-icon="close"></button>
+      </div>
+      <div class="workspace-tabs" id="customerWorkspaceTabs" role="tablist">
+        <button class="active" data-workspace-tab="contacts">聯絡方式</button>
+        <button data-workspace-tab="relationships">家庭關係</button>
+        <button data-workspace-tab="interactions">互動紀錄</button>
+        <button data-workspace-tab="tasks">服務待辦</button>
+        <button data-workspace-tab="documents">客戶文件</button>
+        <button data-workspace-tab="consents">同意紀錄</button>
+      </div>
+      <div class="workspace-content">
+        <div class="workspace-list" id="customerWorkspaceList"></div>
+        <form class="workspace-form" id="customerWorkspaceForm">
+          <input type="hidden" name="recordId">
+          <input type="hidden" name="version">
+          <div class="workspace-form-heading">
+            <div>
+              <span class="section-kicker">新增紀錄</span>
+              <h4 id="workspaceFormTitle">新增聯絡方式</h4>
+            </div>
+            <button type="button" class="text-button hidden" id="resetWorkspaceForm">取消編輯</button>
+          </div>
+          <div class="workspace-fields" id="customerWorkspaceFields"></div>
+          <button type="submit" class="primary-button">儲存這筆紀錄</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="customerImportModal" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="customerImportTitle">
+      <div class="modal-header">
+        <div>
+          <span class="section-kicker">背景匯入</span>
+          <h3 id="customerImportTitle">批次匯入客戶</h3>
+        </div>
+        <button class="icon-button" data-close-import aria-label="關閉" data-icon="close"></button>
+      </div>
+      <div class="import-drop">
+        <label>選擇 CSV 或 XLSX 檔案
+          <input type="file" id="customerImportFile" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+        </label>
+        <p>第一列需有欄位名稱，至少包含「客戶姓名」。支援姓名、手機、Email、生日、服務階段、追蹤日期、保障需求與備註。</p>
+        <button type="button" class="primary-button" id="startCustomerImport" disabled>開始背景匯入</button>
+      </div>
+      <div class="import-progress hidden" id="customerImportProgress">
+        <div class="import-progress-heading">
+          <div><strong id="importStatusLabel">準備匯入</strong><small id="importProgressDetail">0 / 0</small></div>
+          <button type="button" class="danger-button" id="cancelCustomerImport">取消工作</button>
+        </div>
+        <div class="progress-track"><span id="customerImportProgressBar"></span></div>
+        <div class="import-result-actions">
+          <button type="button" class="secondary-button hidden" id="downloadImportErrors">下載錯誤明細</button>
+        </div>
+      </div>
     </div>
   </div>
 

@@ -7,6 +7,7 @@ import {
   unprotectEventFields,
   unprotectPolicyFields
 } from './protected-records.mjs';
+import { createWorkflowRepository } from './workflow-repository.mjs';
 
 function text(value) {
   return value === null || value === undefined ? '' : String(value);
@@ -244,10 +245,10 @@ export function createPostgresqlDatabase(pool, { dataProtection = null } = {}) {
     const result = await executor.query(
       scopedUserId
         ? `SELECT * FROM customers
-           WHERE organization_id = $1 AND owner_user_id = $2
+           WHERE organization_id = $1 AND owner_user_id = $2 AND archived_at IS NULL
            ORDER BY updated_at DESC, id`
         : `SELECT * FROM customers
-           WHERE organization_id = $1
+           WHERE organization_id = $1 AND archived_at IS NULL
            ORDER BY updated_at DESC, id`,
       scopedUserId
         ? [text(organizationId), scopedUserId]
@@ -271,8 +272,10 @@ export function createPostgresqlDatabase(pool, { dataProtection = null } = {}) {
       executor,
       scopedUserId
         ? `SELECT * FROM customers
-           WHERE organization_id = $1 AND id = $2 AND owner_user_id = $3`
-        : 'SELECT * FROM customers WHERE organization_id = $1 AND id = $2',
+           WHERE organization_id = $1 AND id = $2 AND owner_user_id = $3
+             AND archived_at IS NULL`
+        : `SELECT * FROM customers
+           WHERE organization_id = $1 AND id = $2 AND archived_at IS NULL`,
       scopedUserId
         ? [text(organizationId), text(id), scopedUserId]
         : [text(organizationId), text(id)]
@@ -296,10 +299,17 @@ export function createPostgresqlDatabase(pool, { dataProtection = null } = {}) {
              ON customers.organization_id = policies.organization_id
              AND customers.id = policies.customer_id
            WHERE policies.organization_id = $1 AND customers.owner_user_id = $2
+             AND policies.archived_at IS NULL
+             AND customers.archived_at IS NULL
            ORDER BY policies.updated_at DESC, policies.id`
-        : `SELECT * FROM policies
-           WHERE organization_id = $1
-           ORDER BY updated_at DESC, id`,
+        : `SELECT policies.* FROM policies
+           JOIN customers
+             ON customers.organization_id = policies.organization_id
+             AND customers.id = policies.customer_id
+           WHERE policies.organization_id = $1
+             AND policies.archived_at IS NULL
+             AND customers.archived_at IS NULL
+           ORDER BY policies.updated_at DESC, policies.id`,
       scopedUserId
         ? [text(organizationId), scopedUserId]
         : [text(organizationId)]
@@ -327,8 +337,16 @@ export function createPostgresqlDatabase(pool, { dataProtection = null } = {}) {
              AND customers.id = policies.customer_id
            WHERE policies.organization_id = $1
              AND policies.id = $2
-             AND customers.owner_user_id = $3`
-        : 'SELECT * FROM policies WHERE organization_id = $1 AND id = $2',
+             AND customers.owner_user_id = $3
+             AND policies.archived_at IS NULL
+             AND customers.archived_at IS NULL`
+        : `SELECT policies.* FROM policies
+           JOIN customers
+             ON customers.organization_id = policies.organization_id
+             AND customers.id = policies.customer_id
+           WHERE policies.organization_id = $1 AND policies.id = $2
+             AND policies.archived_at IS NULL
+             AND customers.archived_at IS NULL`,
       scopedUserId
         ? [text(organizationId), text(id), scopedUserId]
         : [text(organizationId), text(id)]
@@ -352,14 +370,21 @@ export function createPostgresqlDatabase(pool, { dataProtection = null } = {}) {
              ON customers.organization_id = events.organization_id
              AND customers.id = events.customer_id
            WHERE events.organization_id = $1
+             AND events.archived_at IS NULL
+             AND (events.customer_id IS NULL OR customers.archived_at IS NULL)
              AND (
                customers.owner_user_id = $2
                OR (events.customer_id IS NULL AND events.category = 'team')
              )
            ORDER BY events.event_date, events.event_time, events.id`
-        : `SELECT * FROM events
-           WHERE organization_id = $1
-           ORDER BY event_date, event_time, id`,
+        : `SELECT events.* FROM events
+           LEFT JOIN customers
+             ON customers.organization_id = events.organization_id
+             AND customers.id = events.customer_id
+           WHERE events.organization_id = $1
+             AND events.archived_at IS NULL
+             AND (events.customer_id IS NULL OR customers.archived_at IS NULL)
+           ORDER BY events.event_date, events.event_time, events.id`,
       scopedUserId
         ? [text(organizationId), scopedUserId]
         : [text(organizationId)]
@@ -387,11 +412,19 @@ export function createPostgresqlDatabase(pool, { dataProtection = null } = {}) {
              AND customers.id = events.customer_id
            WHERE events.organization_id = $1
              AND events.id = $2
+             AND events.archived_at IS NULL
+             AND (events.customer_id IS NULL OR customers.archived_at IS NULL)
              AND (
                customers.owner_user_id = $3
                OR (events.customer_id IS NULL AND events.category = 'team')
              )`
-        : 'SELECT * FROM events WHERE organization_id = $1 AND id = $2',
+        : `SELECT events.* FROM events
+           LEFT JOIN customers
+             ON customers.organization_id = events.organization_id
+             AND customers.id = events.customer_id
+           WHERE events.organization_id = $1 AND events.id = $2
+             AND events.archived_at IS NULL
+             AND (events.customer_id IS NULL OR customers.archived_at IS NULL)`,
       scopedUserId
         ? [text(organizationId), text(id), scopedUserId]
         : [text(organizationId), text(id)]
@@ -418,11 +451,15 @@ export function createPostgresqlDatabase(pool, { dataProtection = null } = {}) {
       listOrganizationPolicies(organization, accessUserId),
       listOrganizationEvents(organization, accessUserId),
       pool.query(
-        'SELECT * FROM team_members WHERE organization_id = $1 ORDER BY is_owner DESC, name',
+        `SELECT * FROM team_members
+         WHERE organization_id = $1 AND archived_at IS NULL
+         ORDER BY is_owner DESC, name`,
         [organization]
       ),
       pool.query(
-        'SELECT * FROM team_tasks WHERE organization_id = $1 ORDER BY done, due, id',
+        `SELECT * FROM team_tasks
+         WHERE organization_id = $1 AND archived_at IS NULL
+         ORDER BY done, due, id`,
         [organization]
       ),
       one(pool, `
@@ -605,6 +642,66 @@ export function createPostgresqlDatabase(pool, { dataProtection = null } = {}) {
     });
   }
 
+  async function replaceOrganizationTeamState(
+    organizationId,
+    actorUserId,
+    state,
+    expectedRevision
+  ) {
+    const organization = text(organizationId);
+    return transaction(pool, async (client) => {
+      const currentRevision = await getOrganizationRevision(organization, client, true);
+      if (Number(expectedRevision) !== currentRevision) {
+        return { conflict: true, revision: currentRevision };
+      }
+      await client.query('DELETE FROM team_tasks WHERE organization_id = $1', [organization]);
+      await client.query('DELETE FROM team_members WHERE organization_id = $1', [organization]);
+      for (const item of state.teamMembers) {
+        await client.query(`
+          INSERT INTO team_members (
+            id, organization_id, name, role, specialty, target, closed, is_owner,
+            version, created_at, updated_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, now(), now())
+        `, [
+          text(item.id), organization, text(item.name), text(item.role),
+          text(item.specialty), Number(item.target || 0), Number(item.closed || 0),
+          Boolean(item.owner)
+        ]);
+      }
+      for (const item of state.teamTasks) {
+        await client.query(`
+          INSERT INTO team_tasks (
+            id, organization_id, title, owner, due, done, version, created_at, updated_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, 1, now(), now())
+        `, [
+          text(item.id), organization, text(item.title), text(item.owner),
+          text(item.due), Boolean(item.done)
+        ]);
+      }
+      await client.query(`
+        INSERT INTO organization_settings (organization_id, key, value)
+        VALUES ($1, 'teamGoal', $2)
+        ON CONFLICT (organization_id, key) DO UPDATE SET value = EXCLUDED.value
+      `, [organization, String(Number(state.teamGoal || 0))]);
+      await recordAudit(
+        client,
+        organization,
+        actorUserId,
+        'replace',
+        'team_state',
+        null,
+        {
+          members: state.teamMembers.length,
+          tasks: state.teamTasks.length
+        }
+      );
+      return {
+        conflict: false,
+        revision: await incrementOrganizationRevision(client, organization)
+      };
+    });
+  }
+
   async function createOrganizationCustomer(
     organizationId,
     actorUserId,
@@ -722,6 +819,13 @@ export function createPostgresqlDatabase(pool, { dataProtection = null } = {}) {
         fromVersion: Number(expectedVersion),
         toVersion: Number(expectedVersion) + 1
       });
+      await client.query(`
+        DELETE FROM search_tokens
+        WHERE organization_id = $1 AND (
+          (entity_type = 'customer' AND entity_id = $2)
+          OR customer_id = $2
+        )
+      `, [organization, text(id)]);
       return { item: mapCustomer(result.rows[0]) };
     });
   }
@@ -884,6 +988,10 @@ export function createPostgresqlDatabase(pool, { dataProtection = null } = {}) {
         fromVersion: Number(expectedVersion),
         toVersion: Number(expectedVersion) + 1
       });
+      await client.query(`
+        DELETE FROM search_tokens
+        WHERE organization_id = $1 AND entity_type = 'policy' AND entity_id = $2
+      `, [organization, text(id)]);
       return { item: mapPolicy(result.rows[0]) };
     });
   }
@@ -1075,6 +1183,275 @@ export function createPostgresqlDatabase(pool, { dataProtection = null } = {}) {
       });
       return { deletedId: text(id) };
     });
+  }
+
+  function phase2ResourceConfiguration(resourceName) {
+    const configurations = {
+      customers: {
+        alias: 'customers',
+        map: mapCustomer,
+        table: 'customers'
+      },
+      policies: {
+        alias: 'policies',
+        map: mapPolicy,
+        table: 'policies'
+      },
+      events: {
+        alias: 'events',
+        map: mapEvent,
+        table: 'events'
+      }
+    };
+    const configuration = configurations[resourceName];
+    if (!configuration) throw new Error('UNSUPPORTED_RESOURCE');
+    return configuration;
+  }
+
+  function addPostgresqlValue(values, value) {
+    values.push(value);
+    return `$${values.length}`;
+  }
+
+  async function listOrganizationResourcePage(
+    resourceName,
+    organizationId,
+    accessUserId = null,
+    {
+      archived = 'active',
+      cursor = null,
+      filters = {},
+      limit = 50,
+      sortDirection = 'desc'
+    } = {}
+  ) {
+    const configuration = phase2ResourceConfiguration(resourceName);
+    const alias = configuration.alias;
+    const values = [];
+    const conditions = [
+      `${alias}.organization_id = ${addPostgresqlValue(values, text(organizationId))}`
+    ];
+    const scopedUserId = nullableText(accessUserId);
+    let from = `${configuration.table} AS ${alias}`;
+
+    if (resourceName === 'policies') {
+      from += ` JOIN customers
+        ON customers.organization_id = policies.organization_id
+        AND customers.id = policies.customer_id`;
+      if (scopedUserId) {
+        conditions.push(
+          `customers.owner_user_id = ${addPostgresqlValue(values, scopedUserId)}`
+        );
+      }
+      if (archived === 'active') conditions.push('customers.archived_at IS NULL');
+    } else if (resourceName === 'events') {
+      from += ` LEFT JOIN customers
+        ON customers.organization_id = events.organization_id
+        AND customers.id = events.customer_id`;
+      if (scopedUserId) {
+        conditions.push(`(
+          customers.owner_user_id = ${addPostgresqlValue(values, scopedUserId)}
+          OR (events.customer_id IS NULL AND events.category = 'team')
+        )`);
+      }
+      if (archived === 'active') {
+        conditions.push('(events.customer_id IS NULL OR customers.archived_at IS NULL)');
+      }
+    } else if (scopedUserId) {
+      conditions.push(
+        `customers.owner_user_id = ${addPostgresqlValue(values, scopedUserId)}`
+      );
+    }
+
+    if (archived === 'active') conditions.push(`${alias}.archived_at IS NULL`);
+    if (archived === 'only') conditions.push(`${alias}.archived_at IS NOT NULL`);
+
+    const allowedFilters = {
+      customers: {
+        ownerUserId: 'customers.owner_user_id',
+        stage: 'customers.stage'
+      },
+      policies: {
+        company: 'policies.company',
+        customerId: 'policies.customer_id',
+        type: 'policies.type'
+      },
+      events: {
+        category: 'events.category',
+        customerId: 'events.customer_id',
+        status: 'events.status'
+      }
+    }[resourceName];
+    for (const [name, column] of Object.entries(allowedFilters)) {
+      const value = nullableText(filters[name]);
+      if (!value) continue;
+      conditions.push(`${column} = ${addPostgresqlValue(values, value)}`);
+    }
+
+    const direction = sortDirection === 'asc' ? 'ASC' : 'DESC';
+    if (cursor?.updatedAt && cursor?.id) {
+      const comparison = direction === 'ASC' ? '>' : '<';
+      const timestampParameter = addPostgresqlValue(values, text(cursor.updatedAt));
+      const idParameter = addPostgresqlValue(values, text(cursor.id));
+      conditions.push(
+        `(${alias}.updated_at ${comparison} ${timestampParameter}
+          OR (${alias}.updated_at = ${timestampParameter} AND ${alias}.id > ${idParameter}))`
+      );
+    }
+    const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 100);
+    const limitParameter = addPostgresqlValue(values, safeLimit + 1);
+    const result = await pool.query(`
+      SELECT ${alias}.*
+      FROM ${from}
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY ${alias}.updated_at ${direction}, ${alias}.id ASC
+      LIMIT ${limitParameter}
+    `, values);
+    return {
+      hasMore: result.rows.length > safeLimit,
+      items: result.rows.slice(0, safeLimit).map(configuration.map)
+    };
+  }
+
+  async function getOrganizationResourceIncludingArchived(
+    resourceName,
+    organizationId,
+    id,
+    accessUserId = null,
+    executor = pool
+  ) {
+    const configuration = phase2ResourceConfiguration(resourceName);
+    const alias = configuration.alias;
+    const values = [];
+    const conditions = [
+      `${alias}.organization_id = ${addPostgresqlValue(values, text(organizationId))}`,
+      `${alias}.id = ${addPostgresqlValue(values, text(id))}`
+    ];
+    const scopedUserId = nullableText(accessUserId);
+    let from = `${configuration.table} AS ${alias}`;
+    if (resourceName === 'policies') {
+      from += ` JOIN customers
+        ON customers.organization_id = policies.organization_id
+        AND customers.id = policies.customer_id`;
+      if (scopedUserId) {
+        conditions.push(
+          `customers.owner_user_id = ${addPostgresqlValue(values, scopedUserId)}`
+        );
+      }
+    } else if (resourceName === 'events') {
+      from += ` LEFT JOIN customers
+        ON customers.organization_id = events.organization_id
+        AND customers.id = events.customer_id`;
+      if (scopedUserId) {
+        conditions.push(`(
+          customers.owner_user_id = ${addPostgresqlValue(values, scopedUserId)}
+          OR (events.customer_id IS NULL AND events.category = 'team')
+        )`);
+      }
+    } else if (scopedUserId) {
+      conditions.push(
+        `customers.owner_user_id = ${addPostgresqlValue(values, scopedUserId)}`
+      );
+    }
+    return configuration.map(await one(
+      executor,
+      `SELECT ${alias}.* FROM ${from} WHERE ${conditions.join(' AND ')}`,
+      values
+    ));
+  }
+
+  async function setOrganizationResourceArchived(
+    resourceName,
+    organizationId,
+    actorUserId,
+    id,
+    expectedVersion,
+    archived,
+    accessUserId = null,
+    metadata = {}
+  ) {
+    const configuration = phase2ResourceConfiguration(resourceName);
+    const organization = text(organizationId);
+    return runOrganizationMutation(organization, async (client) => {
+      const current = await getOrganizationResourceIncludingArchived(
+        resourceName,
+        organization,
+        id,
+        accessUserId,
+        client
+      );
+      if (!current) return { notFound: true };
+      if (Number(expectedVersion) !== current.version) {
+        return { conflict: true, item: current };
+      }
+      const result = await client.query(`
+        UPDATE ${configuration.table}
+        SET archived_at = $1, version = version + 1, updated_at = now()
+        WHERE organization_id = $2 AND id = $3 AND version = $4
+        RETURNING *
+      `, [
+        archived ? new Date().toISOString() : null,
+        organization,
+        text(id),
+        Number(expectedVersion)
+      ]);
+      if (!result.rows.length) {
+        return {
+          conflict: true,
+          item: await getOrganizationResourceIncludingArchived(
+            resourceName,
+            organization,
+            id,
+            accessUserId,
+            client
+          )
+        };
+      }
+      if (resourceName === 'customers') {
+        await client.query(`
+          DELETE FROM search_tokens
+          WHERE organization_id = $1 AND customer_id = $2
+        `, [organization, text(id)]);
+      } else if (resourceName === 'policies') {
+        await client.query(`
+          DELETE FROM search_tokens
+          WHERE organization_id = $1 AND entity_type = 'policy' AND entity_id = $2
+        `, [organization, text(id)]);
+      }
+      await recordAudit(
+        client,
+        organization,
+        actorUserId,
+        archived ? 'archive' : 'restore',
+        resourceName.slice(0, -1),
+        id,
+        {
+          ...metadata,
+          fromVersion: Number(expectedVersion),
+          toVersion: Number(expectedVersion) + 1
+        }
+      );
+      return { item: configuration.map(result.rows[0]) };
+    });
+  }
+
+  async function recordOrganizationApiAudit(
+    organizationId,
+    actorUserId,
+    action,
+    entityType,
+    entityId = null,
+    metadata = {}
+  ) {
+    await recordAudit(
+      pool,
+      organizationId,
+      actorUserId,
+      action,
+      entityType,
+      entityId,
+      metadata
+    );
   }
 
   async function countUsers() {
@@ -1631,10 +2008,16 @@ export function createPostgresqlDatabase(pool, { dataProtection = null } = {}) {
 
   async function protectSensitiveData() {
     if (!dataProtection) {
-      return { customers: 0, policies: 0, events: 0, attachments: 0 };
+      return { customers: 0, policies: 0, events: 0, attachments: 0, workflow: 0 };
     }
     return transaction(pool, async (client) => {
-      const counts = { customers: 0, policies: 0, events: 0, attachments: 0 };
+      const counts = {
+        customers: 0,
+        policies: 0,
+        events: 0,
+        attachments: 0,
+        workflow: 0
+      };
       for (const row of (await client.query('SELECT * FROM customers')).rows) {
         const fields = protectCustomerFields(dataProtection, row.organization_id, {
           ...row,
@@ -1696,6 +2079,80 @@ export function createPostgresqlDatabase(pool, { dataProtection = null } = {}) {
         );
         counts.attachments += 1;
       }
+      const workflowColumns = [
+        ['customer_profiles', 'customer_profile', [
+          ['occupation_ciphertext', 'occupation'],
+          ['household_summary_ciphertext', 'householdSummary'],
+          ['risk_notes_ciphertext', 'riskNotes']
+        ]],
+        ['customer_contacts', 'customer_contact', [['value_ciphertext', 'value']]],
+        ['customer_relationships', 'customer_relationship', [
+          ['display_name_ciphertext', 'displayName'],
+          ['note_ciphertext', 'note']
+        ]],
+        ['policy_coverages', 'policy_coverage', [
+          ['insured_amount_ciphertext', 'insuredAmount'],
+          ['benefit_summary_ciphertext', 'benefitSummary']
+        ]],
+        ['policy_parties', 'policy_party', [['display_name_ciphertext', 'displayName']]],
+        ['customer_interactions', 'customer_interaction', [
+          ['subject_ciphertext', 'subject'],
+          ['summary_ciphertext', 'summary']
+        ]],
+        ['tasks', 'task', [
+          ['title_ciphertext', 'title'],
+          ['detail_ciphertext', 'detail']
+        ]],
+        ['documents', 'document', [
+          ['title_ciphertext', 'title'],
+          ['extracted_data_ciphertext', 'extractedData']
+        ]],
+        ['consents', 'consent', [['note_ciphertext', 'note']]],
+        ['search_tokens', 'search_entry', [['display_ciphertext', 'display']]],
+        ['import_jobs', 'import_job', [
+          ['file_name_ciphertext', 'fileName'],
+          ['rows_ciphertext', 'rows'],
+          ['error_csv_ciphertext', 'errors']
+        ]],
+        ['ocr_fields', 'ocr_field', [['value_ciphertext', 'value']]],
+        ['ocr_corrections', 'ocr_correction', [
+          ['previous_value_ciphertext', 'previousValue'],
+          ['corrected_value_ciphertext', 'correctedValue']
+        ]]
+      ];
+      for (const [table, entityType, columns] of workflowColumns) {
+        const rows = (await client.query(`SELECT ctid::text AS _ctid, * FROM ${table}`)).rows;
+        for (const row of rows) {
+          const values = [];
+          const assignments = [];
+          for (const [column, field] of columns) {
+            const context = {
+              organizationId: row.organization_id,
+              entityType,
+              entityId: row.entity_id || row.id,
+              field
+            };
+            const current = row[column];
+            const protectedValue = dataProtection.isProtectedText(current)
+              ? dataProtection.needsRotation(current)
+                ? dataProtection.protectText(
+                  dataProtection.unprotectText(current, context),
+                  context
+                )
+                : current
+              : dataProtection.protectText(current, context);
+            values.push(protectedValue);
+            assignments.push(`${column} = $${values.length}`);
+            counts.workflow += 1;
+          }
+          values.push(row._ctid);
+          await client.query(`
+            UPDATE ${table}
+            SET ${assignments.join(', ')}
+            WHERE ctid = $${values.length}::tid
+          `, values);
+        }
+      }
       return counts;
     });
   }
@@ -1705,13 +2162,105 @@ export function createPostgresqlDatabase(pool, { dataProtection = null } = {}) {
     return row ? ['ok'] : ['unavailable'];
   }
 
+  async function phase2MigrationReport() {
+    const requiredTables = [
+      'customer_profiles',
+      'customer_contacts',
+      'customer_relationships',
+      'policy_coverages',
+      'policy_parties',
+      'customer_interactions',
+      'tasks',
+      'documents',
+      'consents'
+    ];
+    const tableResult = await pool.query(`
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_name = ANY($1::text[])
+    `, [requiredTables]);
+    const existingTables = new Set(tableResult.rows.map((row) => row.table_name));
+    const counts = {};
+    for (const table of ['customers', 'policies', 'events']) {
+      const row = await one(pool, `
+        SELECT
+          count(*)::bigint AS total,
+          count(*) FILTER (WHERE archived_at IS NULL)::bigint AS active,
+          count(*) FILTER (WHERE archived_at IS NOT NULL)::bigint AS archived
+        FROM ${table}
+      `);
+      counts[table] = Object.fromEntries(
+        Object.entries(row).map(([name, value]) => [name, Number(value)])
+      );
+    }
+    const scopeQueries = {
+      customerContacts: `
+        SELECT count(*)::bigint AS count FROM customer_contacts AS item
+        LEFT JOIN customers AS parent
+          ON parent.id = item.customer_id AND parent.organization_id = item.organization_id
+        WHERE parent.id IS NULL
+      `,
+      customerProfiles: `
+        SELECT count(*)::bigint AS count FROM customer_profiles AS item
+        LEFT JOIN customers AS parent
+          ON parent.id = item.customer_id AND parent.organization_id = item.organization_id
+        WHERE parent.id IS NULL
+      `,
+      customerRelationships: `
+        SELECT count(*)::bigint AS count FROM customer_relationships AS item
+        LEFT JOIN customers AS parent
+          ON parent.id = item.customer_id AND parent.organization_id = item.organization_id
+        WHERE parent.id IS NULL
+      `,
+      policyCoverages: `
+        SELECT count(*)::bigint AS count FROM policy_coverages AS item
+        LEFT JOIN policies AS parent
+          ON parent.id = item.policy_id AND parent.organization_id = item.organization_id
+        WHERE parent.id IS NULL
+      `,
+      policyParties: `
+        SELECT count(*)::bigint AS count FROM policy_parties AS item
+        LEFT JOIN policies AS parent
+          ON parent.id = item.policy_id AND parent.organization_id = item.organization_id
+        WHERE parent.id IS NULL
+      `
+    };
+    const scopeViolations = {};
+    for (const [name, sql] of Object.entries(scopeQueries)) {
+      scopeViolations[name] = Number((await one(pool, sql)).count);
+    }
+    const missingTables = requiredTables.filter((table) => !existingTables.has(table));
+    return {
+      counts,
+      engine: 'postgresql',
+      missingTables,
+      schemaReady: missingTables.length === 0,
+      scopeViolations
+    };
+  }
+
   async function dataProtectionStatus() {
     const queries = [
       'SELECT name, phone, email, birthday, needs, note FROM customers',
       `SELECT customer_name, policy_number, start_date, coverage, premium, summary
        FROM policies`,
       'SELECT title, detail, note FROM events',
-      'SELECT original_name FROM attachments'
+      'SELECT original_name FROM attachments',
+      `SELECT occupation_ciphertext, household_summary_ciphertext, risk_notes_ciphertext
+       FROM customer_profiles`,
+      'SELECT value_ciphertext FROM customer_contacts',
+      'SELECT display_name_ciphertext, note_ciphertext FROM customer_relationships',
+      'SELECT insured_amount_ciphertext, benefit_summary_ciphertext FROM policy_coverages',
+      'SELECT display_name_ciphertext FROM policy_parties',
+      'SELECT subject_ciphertext, summary_ciphertext FROM customer_interactions',
+      'SELECT title_ciphertext, detail_ciphertext FROM tasks',
+      'SELECT title_ciphertext, extracted_data_ciphertext FROM documents',
+      'SELECT note_ciphertext FROM consents',
+      'SELECT display_ciphertext FROM search_tokens',
+      'SELECT file_name_ciphertext, rows_ciphertext, error_csv_ciphertext FROM import_jobs',
+      'SELECT value_ciphertext FROM ocr_fields',
+      `SELECT previous_value_ciphertext, corrected_value_ciphertext
+       FROM ocr_corrections`
     ];
     const values = [];
     for (const sql of queries) {
@@ -1992,7 +2541,38 @@ export function createPostgresqlDatabase(pool, { dataProtection = null } = {}) {
     });
   }
 
+  const workflowRepository = createWorkflowRepository({
+    engine: 'postgresql',
+    driver: pool,
+    dataProtection,
+    mutate: runOrganizationMutation,
+    audit: recordAudit,
+    getCustomer: (
+      organizationId,
+      id,
+      accessUserId,
+      executor = pool
+    ) => getOrganizationCustomerWithExecutor(
+      organizationId,
+      id,
+      accessUserId,
+      executor
+    ),
+    getPolicy: (
+      organizationId,
+      id,
+      accessUserId,
+      executor = pool
+    ) => getOrganizationPolicyWithExecutor(
+      organizationId,
+      id,
+      accessUserId,
+      executor
+    )
+  });
+
   return {
+    ...workflowRepository,
     changeOrganizationUserPassword,
     close: () => pool.end(),
     countUsers,
@@ -2033,15 +2613,20 @@ export function createPostgresqlDatabase(pool, { dataProtection = null } = {}) {
     listOrganizationCustomers,
     listOrganizationEvents,
     listOrganizationPolicies,
+    listOrganizationResourcePage,
     listOrganizationUsers,
     migrationCounts,
+    phase2MigrationReport,
     protectSensitiveData,
+    recordOrganizationApiAudit,
     recordLoginFailure,
     recordLoginSuccess,
     recoverOrganizationUser,
     replaceOrganizationState,
+    replaceOrganizationTeamState,
     resetOrganizationUserPassword,
     setOrganizationUserMfaPending,
+    setOrganizationResourceArchived,
     touchSession,
     updateOrganizationCustomer,
     updateOrganizationEvent,

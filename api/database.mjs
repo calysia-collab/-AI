@@ -10,6 +10,10 @@ import {
   unprotectEventFields,
   unprotectPolicyFields
 } from './protected-records.mjs';
+import {
+  createWorkflowRepository,
+  ensureSqliteWorkflowSchema
+} from './workflow-repository.mjs';
 
 function toText(value) {
   return value === null || value === undefined ? '' : String(value);
@@ -309,6 +313,17 @@ export function createAppDatabase(filename, { dataProtection = null } = {}) {
   ensureColumn('users', 'mfa_enabled', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('users', 'mfa_last_counter', 'INTEGER');
   ensureColumn('customers', 'owner_user_id', 'TEXT');
+  ensureColumn('customers', 'archived_at', 'TEXT');
+  ensureColumn('policies', 'archived_at', 'TEXT');
+  ensureColumn('events', 'archived_at', 'TEXT');
+  ensureColumn('team_members', 'version', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn('team_members', 'created_at', 'TEXT');
+  ensureColumn('team_members', 'updated_at', 'TEXT');
+  ensureColumn('team_members', 'archived_at', 'TEXT');
+  ensureColumn('team_tasks', 'version', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn('team_tasks', 'created_at', 'TEXT');
+  ensureColumn('team_tasks', 'updated_at', 'TEXT');
+  ensureColumn('team_tasks', 'archived_at', 'TEXT');
   ensureColumn('audit_logs', 'organization_id', 'TEXT');
   ensureColumn('audit_logs', 'actor_user_id', 'TEXT');
   database.exec(`
@@ -321,6 +336,199 @@ export function createAppDatabase(filename, { dataProtection = null } = {}) {
     CREATE INDEX IF NOT EXISTS team_tasks_organization_id_idx ON team_tasks(organization_id);
     CREATE INDEX IF NOT EXISTS audit_logs_organization_id_idx
       ON audit_logs(organization_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS customers_active_page_idx
+      ON customers(organization_id, updated_at DESC, id)
+      WHERE archived_at IS NULL;
+    CREATE INDEX IF NOT EXISTS customers_active_owner_page_idx
+      ON customers(organization_id, owner_user_id, updated_at DESC, id)
+      WHERE archived_at IS NULL;
+    CREATE INDEX IF NOT EXISTS policies_active_page_idx
+      ON policies(organization_id, updated_at DESC, id)
+      WHERE archived_at IS NULL;
+    CREATE INDEX IF NOT EXISTS events_active_page_idx
+      ON events(organization_id, updated_at DESC, id)
+      WHERE archived_at IS NULL;
+    CREATE TABLE IF NOT EXISTS customer_profiles (
+      id TEXT PRIMARY KEY,
+      organization_id TEXT NOT NULL,
+      customer_id TEXT NOT NULL,
+      occupation_ciphertext TEXT NOT NULL DEFAULT '',
+      marital_status TEXT NOT NULL DEFAULT '',
+      household_summary_ciphertext TEXT NOT NULL DEFAULT '',
+      risk_notes_ciphertext TEXT NOT NULL DEFAULT '',
+      version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      archived_at TEXT,
+      UNIQUE (organization_id, id),
+      UNIQUE (organization_id, customer_id),
+      FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+      FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS customer_contacts (
+      id TEXT PRIMARY KEY,
+      organization_id TEXT NOT NULL,
+      customer_id TEXT NOT NULL,
+      contact_type TEXT NOT NULL,
+      label TEXT NOT NULL DEFAULT '',
+      value_ciphertext TEXT NOT NULL,
+      is_primary INTEGER NOT NULL DEFAULT 0,
+      version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      archived_at TEXT,
+      UNIQUE (organization_id, id),
+      FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+      FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS customer_relationships (
+      id TEXT PRIMARY KEY,
+      organization_id TEXT NOT NULL,
+      customer_id TEXT NOT NULL,
+      related_customer_id TEXT,
+      relationship_type TEXT NOT NULL,
+      display_name_ciphertext TEXT NOT NULL DEFAULT '',
+      note_ciphertext TEXT NOT NULL DEFAULT '',
+      version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      archived_at TEXT,
+      UNIQUE (organization_id, id),
+      FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+      FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+      FOREIGN KEY (related_customer_id) REFERENCES customers(id) ON DELETE SET NULL
+    );
+    CREATE TABLE IF NOT EXISTS policy_coverages (
+      id TEXT PRIMARY KEY,
+      organization_id TEXT NOT NULL,
+      policy_id TEXT NOT NULL,
+      coverage_type TEXT NOT NULL,
+      insured_amount_ciphertext TEXT NOT NULL DEFAULT '',
+      benefit_summary_ciphertext TEXT NOT NULL DEFAULT '',
+      waiting_period TEXT NOT NULL DEFAULT '',
+      version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      archived_at TEXT,
+      UNIQUE (organization_id, id),
+      FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+      FOREIGN KEY (policy_id) REFERENCES policies(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS policy_parties (
+      id TEXT PRIMARY KEY,
+      organization_id TEXT NOT NULL,
+      policy_id TEXT NOT NULL,
+      customer_id TEXT,
+      party_type TEXT NOT NULL,
+      display_name_ciphertext TEXT NOT NULL DEFAULT '',
+      relationship_label TEXT NOT NULL DEFAULT '',
+      version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      archived_at TEXT,
+      UNIQUE (organization_id, id),
+      FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+      FOREIGN KEY (policy_id) REFERENCES policies(id) ON DELETE CASCADE,
+      FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE SET NULL
+    );
+    CREATE TABLE IF NOT EXISTS customer_interactions (
+      id TEXT PRIMARY KEY,
+      organization_id TEXT NOT NULL,
+      customer_id TEXT NOT NULL,
+      advisor_user_id TEXT,
+      interaction_type TEXT NOT NULL,
+      occurred_at TEXT NOT NULL,
+      subject_ciphertext TEXT NOT NULL DEFAULT '',
+      summary_ciphertext TEXT NOT NULL DEFAULT '',
+      version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      archived_at TEXT,
+      UNIQUE (organization_id, id),
+      FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+      FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+      FOREIGN KEY (advisor_user_id) REFERENCES users(id) ON DELETE SET NULL
+    );
+    CREATE TABLE IF NOT EXISTS tasks (
+      id TEXT PRIMARY KEY,
+      organization_id TEXT NOT NULL,
+      customer_id TEXT,
+      assigned_user_id TEXT,
+      title_ciphertext TEXT NOT NULL,
+      detail_ciphertext TEXT NOT NULL DEFAULT '',
+      due_at TEXT,
+      status TEXT NOT NULL DEFAULT 'open',
+      priority TEXT NOT NULL DEFAULT 'normal',
+      version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      archived_at TEXT,
+      UNIQUE (organization_id, id),
+      FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+      FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE SET NULL,
+      FOREIGN KEY (assigned_user_id) REFERENCES users(id) ON DELETE SET NULL
+    );
+    CREATE TABLE IF NOT EXISTS documents (
+      id TEXT PRIMARY KEY,
+      organization_id TEXT NOT NULL,
+      customer_id TEXT,
+      policy_id TEXT,
+      attachment_id TEXT,
+      document_type TEXT NOT NULL,
+      title_ciphertext TEXT NOT NULL DEFAULT '',
+      extracted_data_ciphertext TEXT NOT NULL DEFAULT '',
+      processing_status TEXT NOT NULL DEFAULT 'pending',
+      version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      archived_at TEXT,
+      UNIQUE (organization_id, id),
+      FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+      FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE SET NULL,
+      FOREIGN KEY (policy_id) REFERENCES policies(id) ON DELETE SET NULL,
+      FOREIGN KEY (attachment_id) REFERENCES attachments(id) ON DELETE SET NULL
+    );
+    CREATE TABLE IF NOT EXISTS consents (
+      id TEXT PRIMARY KEY,
+      organization_id TEXT NOT NULL,
+      customer_id TEXT NOT NULL,
+      consent_type TEXT NOT NULL,
+      status TEXT NOT NULL,
+      granted_at TEXT,
+      withdrawn_at TEXT,
+      expires_at TEXT,
+      evidence_document_id TEXT,
+      note_ciphertext TEXT NOT NULL DEFAULT '',
+      version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      archived_at TEXT,
+      UNIQUE (organization_id, id),
+      FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+      FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+      FOREIGN KEY (evidence_document_id) REFERENCES documents(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS customer_profiles_customer_idx
+      ON customer_profiles(organization_id, customer_id) WHERE archived_at IS NULL;
+    CREATE INDEX IF NOT EXISTS customer_contacts_customer_idx
+      ON customer_contacts(organization_id, customer_id, contact_type) WHERE archived_at IS NULL;
+    CREATE INDEX IF NOT EXISTS customer_relationships_customer_idx
+      ON customer_relationships(organization_id, customer_id) WHERE archived_at IS NULL;
+    CREATE INDEX IF NOT EXISTS policy_coverages_policy_idx
+      ON policy_coverages(organization_id, policy_id) WHERE archived_at IS NULL;
+    CREATE INDEX IF NOT EXISTS policy_parties_policy_idx
+      ON policy_parties(organization_id, policy_id) WHERE archived_at IS NULL;
+    CREATE INDEX IF NOT EXISTS customer_interactions_customer_idx
+      ON customer_interactions(organization_id, customer_id, occurred_at DESC)
+      WHERE archived_at IS NULL;
+    CREATE INDEX IF NOT EXISTS tasks_due_idx
+      ON tasks(organization_id, status, due_at) WHERE archived_at IS NULL;
+    CREATE INDEX IF NOT EXISTS documents_customer_idx
+      ON documents(organization_id, customer_id, created_at DESC) WHERE archived_at IS NULL;
+    CREATE INDEX IF NOT EXISTS documents_policy_idx
+      ON documents(organization_id, policy_id, created_at DESC) WHERE archived_at IS NULL;
+    CREATE INDEX IF NOT EXISTS consents_customer_idx
+      ON consents(organization_id, customer_id, consent_type) WHERE archived_at IS NULL;
     CREATE TRIGGER IF NOT EXISTS customers_organization_guard_insert
     BEFORE INSERT ON customers
     WHEN NEW.organization_id IS NOT NULL
@@ -479,6 +687,8 @@ export function createAppDatabase(filename, { dataProtection = null } = {}) {
       ) = 1
   `);
 
+  ensureSqliteWorkflowSchema(database);
+
   const mapCustomer = (row) => rowToCustomer(row, dataProtection);
   const mapPolicy = (row) => rowToPolicy(row, dataProtection);
   const mapEvent = (row) => rowToEvent(row, dataProtection);
@@ -623,22 +833,32 @@ export function createAppDatabase(filename, { dataProtection = null } = {}) {
       UPDATE organization_revisions SET revision = ? WHERE organization_id = ?
     `),
     organizationCustomers: database.prepare(`
-      SELECT * FROM customers WHERE organization_id = ? ORDER BY next_follow_up, name
+      SELECT * FROM customers
+      WHERE organization_id = ? AND archived_at IS NULL
+      ORDER BY next_follow_up, name
     `),
     organizationCustomersForOwner: database.prepare(`
       SELECT * FROM customers
-      WHERE organization_id = ? AND owner_user_id = ?
+      WHERE organization_id = ? AND owner_user_id = ? AND archived_at IS NULL
       ORDER BY next_follow_up, name
     `),
     organizationCustomerById: database.prepare(`
-      SELECT * FROM customers WHERE organization_id = ? AND id = ?
+      SELECT * FROM customers
+      WHERE organization_id = ? AND id = ? AND archived_at IS NULL
     `),
     organizationCustomerByIdForOwner: database.prepare(`
       SELECT * FROM customers
-      WHERE organization_id = ? AND id = ? AND owner_user_id = ?
+      WHERE organization_id = ? AND id = ? AND owner_user_id = ? AND archived_at IS NULL
     `),
     organizationPolicies: database.prepare(`
-      SELECT * FROM policies WHERE organization_id = ? ORDER BY updated_at DESC
+      SELECT policies.* FROM policies
+      JOIN customers
+        ON customers.organization_id = policies.organization_id
+        AND customers.id = policies.customer_id
+      WHERE policies.organization_id = ?
+        AND policies.archived_at IS NULL
+        AND customers.archived_at IS NULL
+      ORDER BY policies.updated_at DESC
     `),
     organizationPoliciesForOwner: database.prepare(`
       SELECT policies.* FROM policies
@@ -646,10 +866,18 @@ export function createAppDatabase(filename, { dataProtection = null } = {}) {
         ON customers.organization_id = policies.organization_id
         AND customers.id = policies.customer_id
       WHERE policies.organization_id = ? AND customers.owner_user_id = ?
+        AND policies.archived_at IS NULL
+        AND customers.archived_at IS NULL
       ORDER BY policies.updated_at DESC
     `),
     organizationPolicyById: database.prepare(`
-      SELECT * FROM policies WHERE organization_id = ? AND id = ?
+      SELECT policies.* FROM policies
+      JOIN customers
+        ON customers.organization_id = policies.organization_id
+        AND customers.id = policies.customer_id
+      WHERE policies.organization_id = ? AND policies.id = ?
+        AND policies.archived_at IS NULL
+        AND customers.archived_at IS NULL
     `),
     organizationPolicyByIdForOwner: database.prepare(`
       SELECT policies.* FROM policies
@@ -657,9 +885,18 @@ export function createAppDatabase(filename, { dataProtection = null } = {}) {
         ON customers.organization_id = policies.organization_id
         AND customers.id = policies.customer_id
       WHERE policies.organization_id = ? AND policies.id = ? AND customers.owner_user_id = ?
+        AND policies.archived_at IS NULL
+        AND customers.archived_at IS NULL
     `),
     organizationEvents: database.prepare(`
-      SELECT * FROM events WHERE organization_id = ? ORDER BY event_date, event_time
+      SELECT events.* FROM events
+      LEFT JOIN customers
+        ON customers.organization_id = events.organization_id
+        AND customers.id = events.customer_id
+      WHERE events.organization_id = ?
+        AND events.archived_at IS NULL
+        AND (events.customer_id IS NULL OR customers.archived_at IS NULL)
+      ORDER BY events.event_date, events.event_time
     `),
     organizationEventsForOwner: database.prepare(`
       SELECT events.* FROM events
@@ -667,6 +904,8 @@ export function createAppDatabase(filename, { dataProtection = null } = {}) {
         ON customers.organization_id = events.organization_id
         AND customers.id = events.customer_id
       WHERE events.organization_id = ?
+        AND events.archived_at IS NULL
+        AND (events.customer_id IS NULL OR customers.archived_at IS NULL)
         AND (
           customers.owner_user_id = ?
           OR (events.customer_id IS NULL AND events.category = 'team')
@@ -674,7 +913,13 @@ export function createAppDatabase(filename, { dataProtection = null } = {}) {
       ORDER BY events.event_date, events.event_time
     `),
     organizationEventById: database.prepare(`
-      SELECT * FROM events WHERE organization_id = ? AND id = ?
+      SELECT events.* FROM events
+      LEFT JOIN customers
+        ON customers.organization_id = events.organization_id
+        AND customers.id = events.customer_id
+      WHERE events.organization_id = ? AND events.id = ?
+        AND events.archived_at IS NULL
+        AND (events.customer_id IS NULL OR customers.archived_at IS NULL)
     `),
     organizationEventByIdForOwner: database.prepare(`
       SELECT events.* FROM events
@@ -682,16 +927,22 @@ export function createAppDatabase(filename, { dataProtection = null } = {}) {
         ON customers.organization_id = events.organization_id
         AND customers.id = events.customer_id
       WHERE events.organization_id = ? AND events.id = ?
+        AND events.archived_at IS NULL
+        AND (events.customer_id IS NULL OR customers.archived_at IS NULL)
         AND (
           customers.owner_user_id = ?
           OR (events.customer_id IS NULL AND events.category = 'team')
         )
     `),
     organizationMembers: database.prepare(`
-      SELECT * FROM team_members WHERE organization_id = ? ORDER BY is_owner DESC, name
+      SELECT * FROM team_members
+      WHERE organization_id = ? AND archived_at IS NULL
+      ORDER BY is_owner DESC, name
     `),
     organizationTasks: database.prepare(`
-      SELECT * FROM team_tasks WHERE organization_id = ? ORDER BY done, due, title
+      SELECT * FROM team_tasks
+      WHERE organization_id = ? AND archived_at IS NULL
+      ORDER BY done, due, title
     `),
     organizationTeamGoal: database.prepare(`
       SELECT value FROM organization_settings WHERE organization_id = ? AND key = 'teamGoal'
@@ -1030,7 +1281,13 @@ export function createAppDatabase(filename, { dataProtection = null } = {}) {
   }
 
   function protectSensitiveDataRows() {
-    const counts = { customers: 0, policies: 0, events: 0, attachments: 0 };
+    const counts = {
+      customers: 0,
+      policies: 0,
+      events: 0,
+      attachments: 0,
+      workflow: 0
+    };
     for (const row of statements.allCustomersForProtection.all()) {
       if (!row.organization_id) continue;
         const fields = protectCustomerFields(dataProtection, row.organization_id, {
@@ -1092,11 +1349,78 @@ export function createAppDatabase(filename, { dataProtection = null } = {}) {
       statements.protectAttachmentName.run(originalName, row.id);
       counts.attachments += 1;
     }
+    const workflowColumns = [
+      ['customer_profiles', 'customer_profile', [
+        ['occupation_ciphertext', 'occupation'],
+        ['household_summary_ciphertext', 'householdSummary'],
+        ['risk_notes_ciphertext', 'riskNotes']
+      ]],
+      ['customer_contacts', 'customer_contact', [['value_ciphertext', 'value']]],
+      ['customer_relationships', 'customer_relationship', [
+        ['display_name_ciphertext', 'displayName'],
+        ['note_ciphertext', 'note']
+      ]],
+      ['policy_coverages', 'policy_coverage', [
+        ['insured_amount_ciphertext', 'insuredAmount'],
+        ['benefit_summary_ciphertext', 'benefitSummary']
+      ]],
+      ['policy_parties', 'policy_party', [['display_name_ciphertext', 'displayName']]],
+      ['customer_interactions', 'customer_interaction', [
+        ['subject_ciphertext', 'subject'],
+        ['summary_ciphertext', 'summary']
+      ]],
+      ['tasks', 'task', [
+        ['title_ciphertext', 'title'],
+        ['detail_ciphertext', 'detail']
+      ]],
+      ['documents', 'document', [
+        ['title_ciphertext', 'title'],
+        ['extracted_data_ciphertext', 'extractedData']
+      ]],
+      ['consents', 'consent', [['note_ciphertext', 'note']]],
+      ['search_tokens', 'search_entry', [['display_ciphertext', 'display']]],
+      ['import_jobs', 'import_job', [
+        ['file_name_ciphertext', 'fileName'],
+        ['rows_ciphertext', 'rows'],
+        ['error_csv_ciphertext', 'errors']
+      ]],
+      ['ocr_fields', 'ocr_field', [['value_ciphertext', 'value']]],
+      ['ocr_corrections', 'ocr_correction', [
+        ['previous_value_ciphertext', 'previousValue'],
+        ['corrected_value_ciphertext', 'correctedValue']
+      ]]
+    ];
+    for (const [table, entityType, columns] of workflowColumns) {
+      for (const row of database.prepare(`SELECT rowid AS _rowid, * FROM ${table}`).all()) {
+        for (const [column, field] of columns) {
+          const context = {
+            organizationId: row.organization_id,
+            entityType,
+            entityId: row.entity_id || row.id,
+            field
+          };
+          const current = row[column];
+          const protectedValue = dataProtection.isProtectedText(current)
+            ? dataProtection.needsRotation(current)
+              ? dataProtection.protectText(
+                dataProtection.unprotectText(current, context),
+                context
+              )
+              : current
+            : dataProtection.protectText(current, context);
+          database.prepare(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`)
+            .run(protectedValue, row._rowid);
+          counts.workflow += 1;
+        }
+      }
+    }
     return counts;
   }
 
   function protectSensitiveData() {
-    if (!dataProtection) return { customers: 0, policies: 0, events: 0, attachments: 0 };
+    if (!dataProtection) {
+      return { customers: 0, policies: 0, events: 0, attachments: 0, workflow: 0 };
+    }
     database.exec('BEGIN IMMEDIATE');
     try {
       const counts = protectSensitiveDataRows();
@@ -1197,6 +1521,23 @@ export function createAppDatabase(filename, { dataProtection = null } = {}) {
     database.exec('BEGIN IMMEDIATE');
     try {
       const result = operation();
+      if (result?.conflict || result?.notFound) {
+        database.exec('ROLLBACK');
+        return result;
+      }
+      const revision = incrementOrganizationRevision(organizationId);
+      database.exec('COMMIT');
+      return { ...result, revision };
+    } catch (error) {
+      database.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  async function runOrganizationAsyncMutation(organizationId, operation) {
+    database.exec('BEGIN IMMEDIATE');
+    try {
+      const result = await operation(database);
       if (result?.conflict || result?.notFound) {
         database.exec('ROLLBACK');
         return result;
@@ -1567,6 +1908,77 @@ export function createAppDatabase(filename, { dataProtection = null } = {}) {
     }
   }
 
+  function replaceOrganizationTeamState(
+    organizationId,
+    actorUserId,
+    state,
+    expectedRevision
+  ) {
+    const context = organizationContext(organizationId, actorUserId);
+    const currentRevision = getOrganizationRevision(context.organizationId);
+    if (Number(expectedRevision) !== currentRevision) {
+      return { conflict: true, revision: currentRevision };
+    }
+
+    database.exec('BEGIN IMMEDIATE');
+    try {
+      statements.deleteOrganizationTasks.run(context.organizationId);
+      statements.deleteOrganizationMembers.run(context.organizationId);
+      const now = new Date().toISOString();
+      for (const member of state.teamMembers) {
+        statements.insertOrganizationMember.run(
+          toText(member.id),
+          context.organizationId,
+          toText(member.name),
+          toText(member.role),
+          toText(member.specialty),
+          Number(member.target || 0),
+          Number(member.closed || 0),
+          member.owner ? 1 : 0
+        );
+        database.prepare(`
+          UPDATE team_members SET created_at = ?, updated_at = ?
+          WHERE organization_id = ? AND id = ?
+        `).run(now, now, context.organizationId, toText(member.id));
+      }
+      for (const task of state.teamTasks) {
+        statements.insertOrganizationTask.run(
+          toText(task.id),
+          context.organizationId,
+          toText(task.title),
+          toText(task.owner),
+          toText(task.due),
+          task.done ? 1 : 0
+        );
+        database.prepare(`
+          UPDATE team_tasks SET created_at = ?, updated_at = ?
+          WHERE organization_id = ? AND id = ?
+        `).run(now, now, context.organizationId, toText(task.id));
+      }
+      statements.setOrganizationTeamGoal.run(
+        context.organizationId,
+        String(Number(state.teamGoal || 0))
+      );
+      recordOrganizationAudit(
+        context.organizationId,
+        context.actorUserId,
+        'replace',
+        'team_state',
+        null,
+        {
+          members: state.teamMembers.length,
+          tasks: state.teamTasks.length
+        }
+      );
+      const revision = incrementOrganizationRevision(context.organizationId);
+      database.exec('COMMIT');
+      return { conflict: false, revision };
+    } catch (error) {
+      database.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   function listOrganizationCustomers(organizationId, accessUserId = null) {
     const organization = toText(organizationId);
     const scopedUserId = nullableText(accessUserId);
@@ -1705,6 +2117,13 @@ export function createAppDatabase(filename, { dataProtection = null } = {}) {
           policyRow.id
         );
       }
+      database.prepare(`
+        DELETE FROM search_tokens
+        WHERE organization_id = ? AND (
+          (entity_type = 'customer' AND entity_id = ?)
+          OR customer_id = ?
+        )
+      `).run(context.organizationId, toText(id), toText(id));
       recordOrganizationAudit(
         context.organizationId,
         context.actorUserId,
@@ -1860,6 +2279,10 @@ export function createAppDatabase(filename, { dataProtection = null } = {}) {
           item: getOrganizationPolicy(context.organizationId, id, accessUserId)
         };
       }
+      database.prepare(`
+        DELETE FROM search_tokens
+        WHERE organization_id = ? AND entity_type = 'policy' AND entity_id = ?
+      `).run(context.organizationId, toText(id));
       recordOrganizationAudit(
         context.organizationId,
         context.actorUserId,
@@ -2070,6 +2493,283 @@ export function createAppDatabase(filename, { dataProtection = null } = {}) {
       );
       return { deletedId: toText(id) };
     });
+  }
+
+  function phase2ResourceConfiguration(resourceName) {
+    const configurations = {
+      customers: {
+        alias: 'customers',
+        map: mapCustomer,
+        table: 'customers'
+      },
+      policies: {
+        alias: 'policies',
+        map: mapPolicy,
+        table: 'policies'
+      },
+      events: {
+        alias: 'events',
+        map: mapEvent,
+        table: 'events'
+      }
+    };
+    const configuration = configurations[resourceName];
+    if (!configuration) throw new Error('UNSUPPORTED_RESOURCE');
+    return configuration;
+  }
+
+  function phase2ResourceQuery(resourceName, organizationId, accessUserId, {
+    archived = 'active',
+    cursor = null,
+    filters = {},
+    limit = 50,
+    sortDirection = 'desc'
+  } = {}) {
+    const configuration = phase2ResourceConfiguration(resourceName);
+    const alias = configuration.alias;
+    const organization = toText(organizationId);
+    const scopedUserId = nullableText(accessUserId);
+    const values = [organization];
+    const conditions = [`${alias}.organization_id = ?`];
+    let from = `${configuration.table} AS ${alias}`;
+
+    if (resourceName === 'policies') {
+      from += ` JOIN customers
+        ON customers.organization_id = policies.organization_id
+        AND customers.id = policies.customer_id`;
+      if (scopedUserId) {
+        conditions.push('customers.owner_user_id = ?');
+        values.push(scopedUserId);
+      }
+      if (archived === 'active') conditions.push('customers.archived_at IS NULL');
+    } else if (resourceName === 'events') {
+      from += ` LEFT JOIN customers
+        ON customers.organization_id = events.organization_id
+        AND customers.id = events.customer_id`;
+      if (scopedUserId) {
+        conditions.push(`(
+          customers.owner_user_id = ?
+          OR (events.customer_id IS NULL AND events.category = 'team')
+        )`);
+        values.push(scopedUserId);
+      }
+      if (archived === 'active') {
+        conditions.push('(events.customer_id IS NULL OR customers.archived_at IS NULL)');
+      }
+    } else if (scopedUserId) {
+      conditions.push('customers.owner_user_id = ?');
+      values.push(scopedUserId);
+    }
+
+    if (archived === 'active') conditions.push(`${alias}.archived_at IS NULL`);
+    if (archived === 'only') conditions.push(`${alias}.archived_at IS NOT NULL`);
+
+    const allowedFilters = {
+      customers: {
+        ownerUserId: 'customers.owner_user_id',
+        stage: 'customers.stage'
+      },
+      policies: {
+        company: 'policies.company',
+        customerId: 'policies.customer_id',
+        type: 'policies.type'
+      },
+      events: {
+        category: 'events.category',
+        customerId: 'events.customer_id',
+        status: 'events.status'
+      }
+    }[resourceName];
+    for (const [name, column] of Object.entries(allowedFilters)) {
+      const value = nullableText(filters[name]);
+      if (!value) continue;
+      conditions.push(`${column} = ?`);
+      values.push(value);
+    }
+
+    const direction = sortDirection === 'asc' ? 'ASC' : 'DESC';
+    if (cursor?.updatedAt && cursor?.id) {
+      const comparison = direction === 'ASC' ? '>' : '<';
+      conditions.push(
+        `(${alias}.updated_at ${comparison} ? OR (${alias}.updated_at = ? AND ${alias}.id > ?))`
+      );
+      values.push(toText(cursor.updatedAt), toText(cursor.updatedAt), toText(cursor.id));
+    }
+
+    const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 100);
+    values.push(safeLimit + 1);
+    const rows = database.prepare(`
+      SELECT ${alias}.*
+      FROM ${from}
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY ${alias}.updated_at ${direction}, ${alias}.id ASC
+      LIMIT ?
+    `).all(...values);
+    return {
+      hasMore: rows.length > safeLimit,
+      items: rows.slice(0, safeLimit).map(configuration.map)
+    };
+  }
+
+  function listOrganizationResourcePage(
+    resourceName,
+    organizationId,
+    accessUserId = null,
+    options = {}
+  ) {
+    return phase2ResourceQuery(
+      resourceName,
+      organizationId,
+      accessUserId,
+      options
+    );
+  }
+
+  function getOrganizationResourceIncludingArchived(
+    resourceName,
+    organizationId,
+    id,
+    accessUserId = null
+  ) {
+    const page = phase2ResourceQuery(resourceName, organizationId, accessUserId, {
+      archived: 'all',
+      filters: {},
+      limit: 100
+    });
+    const item = page.items.find((candidate) => candidate.id === toText(id));
+    if (item) return item;
+
+    const configuration = phase2ResourceConfiguration(resourceName);
+    const alias = configuration.alias;
+    const scopedUserId = nullableText(accessUserId);
+    const values = [toText(organizationId), toText(id)];
+    const conditions = [`${alias}.organization_id = ?`, `${alias}.id = ?`];
+    let from = `${configuration.table} AS ${alias}`;
+    if (resourceName === 'policies') {
+      from += ` JOIN customers
+        ON customers.organization_id = policies.organization_id
+        AND customers.id = policies.customer_id`;
+      if (scopedUserId) {
+        conditions.push('customers.owner_user_id = ?');
+        values.push(scopedUserId);
+      }
+    } else if (resourceName === 'events') {
+      from += ` LEFT JOIN customers
+        ON customers.organization_id = events.organization_id
+        AND customers.id = events.customer_id`;
+      if (scopedUserId) {
+        conditions.push(`(
+          customers.owner_user_id = ?
+          OR (events.customer_id IS NULL AND events.category = 'team')
+        )`);
+        values.push(scopedUserId);
+      }
+    } else if (scopedUserId) {
+      conditions.push('customers.owner_user_id = ?');
+      values.push(scopedUserId);
+    }
+    const row = database.prepare(`
+      SELECT ${alias}.* FROM ${from} WHERE ${conditions.join(' AND ')}
+    `).get(...values);
+    return row ? configuration.map(row) : null;
+  }
+
+  function setOrganizationResourceArchived(
+    resourceName,
+    organizationId,
+    actorUserId,
+    id,
+    expectedVersion,
+    archived,
+    accessUserId = null,
+    metadata = {}
+  ) {
+    const configuration = phase2ResourceConfiguration(resourceName);
+    const context = organizationContext(organizationId, actorUserId);
+    return runOrganizationMutation(context.organizationId, () => {
+      const current = getOrganizationResourceIncludingArchived(
+        resourceName,
+        context.organizationId,
+        id,
+        accessUserId
+      );
+      if (!current) return { notFound: true };
+      if (Number(expectedVersion) !== current.version) {
+        return { conflict: true, item: current };
+      }
+      const archivedAt = archived ? new Date().toISOString() : null;
+      const result = database.prepare(`
+        UPDATE ${configuration.table}
+        SET archived_at = ?, version = version + 1, updated_at = ?
+        WHERE organization_id = ? AND id = ? AND version = ?
+      `).run(
+        archivedAt,
+        new Date().toISOString(),
+        context.organizationId,
+        toText(id),
+        Number(expectedVersion)
+      );
+      if (!result.changes) {
+        return {
+          conflict: true,
+          item: getOrganizationResourceIncludingArchived(
+            resourceName,
+            context.organizationId,
+            id,
+            accessUserId
+          )
+        };
+      }
+      if (resourceName === 'customers') {
+        database.prepare(`
+          DELETE FROM search_tokens
+          WHERE organization_id = ? AND customer_id = ?
+        `).run(context.organizationId, toText(id));
+      } else if (resourceName === 'policies') {
+        database.prepare(`
+          DELETE FROM search_tokens
+          WHERE organization_id = ? AND entity_type = 'policy' AND entity_id = ?
+        `).run(context.organizationId, toText(id));
+      }
+      recordOrganizationAudit(
+        context.organizationId,
+        context.actorUserId,
+        archived ? 'archive' : 'restore',
+        resourceName.slice(0, -1),
+        id,
+        {
+          ...metadata,
+          fromVersion: Number(expectedVersion),
+          toVersion: Number(expectedVersion) + 1
+        }
+      );
+      return {
+        item: getOrganizationResourceIncludingArchived(
+          resourceName,
+          context.organizationId,
+          id,
+          accessUserId
+        )
+      };
+    });
+  }
+
+  function recordOrganizationApiAudit(
+    organizationId,
+    actorUserId,
+    action,
+    entityType,
+    entityId = null,
+    metadata = {}
+  ) {
+    recordOrganizationAudit(
+      organizationId,
+      actorUserId,
+      action,
+      entityType,
+      entityId,
+      metadata
+    );
   }
 
   function listCustomers() {
@@ -2466,6 +3166,77 @@ export function createAppDatabase(filename, { dataProtection = null } = {}) {
     return database.prepare('PRAGMA integrity_check').all().map((row) => Object.values(row)[0]);
   }
 
+  function phase2MigrationReport() {
+    const requiredTables = [
+      'customer_profiles',
+      'customer_contacts',
+      'customer_relationships',
+      'policy_coverages',
+      'policy_parties',
+      'customer_interactions',
+      'tasks',
+      'documents',
+      'consents'
+    ];
+    const existingTables = new Set(database.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'table'
+    `).all().map((row) => row.name));
+    const counts = {};
+    for (const table of ['customers', 'policies', 'events']) {
+      const row = database.prepare(`
+        SELECT
+          count(*) AS total,
+          sum(CASE WHEN archived_at IS NULL THEN 1 ELSE 0 END) AS active,
+          sum(CASE WHEN archived_at IS NOT NULL THEN 1 ELSE 0 END) AS archived
+        FROM ${table}
+      `).get();
+      counts[table] = Object.fromEntries(
+        Object.entries(row).map(([name, value]) => [name, Number(value || 0)])
+      );
+    }
+    const scopeChecks = {
+      customerContacts: `
+        SELECT count(*) AS count FROM customer_contacts AS item
+        LEFT JOIN customers AS parent ON parent.id = item.customer_id
+        WHERE parent.id IS NULL OR parent.organization_id <> item.organization_id
+      `,
+      customerProfiles: `
+        SELECT count(*) AS count FROM customer_profiles AS item
+        LEFT JOIN customers AS parent ON parent.id = item.customer_id
+        WHERE parent.id IS NULL OR parent.organization_id <> item.organization_id
+      `,
+      customerRelationships: `
+        SELECT count(*) AS count FROM customer_relationships AS item
+        LEFT JOIN customers AS parent ON parent.id = item.customer_id
+        WHERE parent.id IS NULL OR parent.organization_id <> item.organization_id
+      `,
+      policyCoverages: `
+        SELECT count(*) AS count FROM policy_coverages AS item
+        LEFT JOIN policies AS parent ON parent.id = item.policy_id
+        WHERE parent.id IS NULL OR parent.organization_id <> item.organization_id
+      `,
+      policyParties: `
+        SELECT count(*) AS count FROM policy_parties AS item
+        LEFT JOIN policies AS parent ON parent.id = item.policy_id
+        WHERE parent.id IS NULL OR parent.organization_id <> item.organization_id
+      `
+    };
+    const scopeViolations = Object.fromEntries(
+      Object.entries(scopeChecks).map(([name, sql]) => [
+        name,
+        Number(database.prepare(sql).get()?.count || 0)
+      ])
+    );
+    const missingTables = requiredTables.filter((table) => !existingTables.has(table));
+    return {
+      counts,
+      engine: 'sqlite',
+      missingTables,
+      schemaReady: missingTables.length === 0,
+      scopeViolations
+    };
+  }
+
   function dataProtectionStatus() {
     const values = [
       ...statements.allCustomersForProtection.all().flatMap((row) => [
@@ -2479,7 +3250,41 @@ export function createAppDatabase(filename, { dataProtection = null } = {}) {
         row.title, row.detail, row.note
       ]),
       ...database.prepare('SELECT original_name FROM attachments').all()
-        .map((row) => row.original_name)
+        .map((row) => row.original_name),
+      ...database.prepare(`
+        SELECT occupation_ciphertext, household_summary_ciphertext, risk_notes_ciphertext
+        FROM customer_profiles
+      `).all().flatMap(Object.values),
+      ...database.prepare('SELECT value_ciphertext FROM customer_contacts').all()
+        .flatMap(Object.values),
+      ...database.prepare(`
+        SELECT display_name_ciphertext, note_ciphertext FROM customer_relationships
+      `).all().flatMap(Object.values),
+      ...database.prepare(`
+        SELECT insured_amount_ciphertext, benefit_summary_ciphertext FROM policy_coverages
+      `).all().flatMap(Object.values),
+      ...database.prepare('SELECT display_name_ciphertext FROM policy_parties').all()
+        .flatMap(Object.values),
+      ...database.prepare(`
+        SELECT subject_ciphertext, summary_ciphertext FROM customer_interactions
+      `).all().flatMap(Object.values),
+      ...database.prepare('SELECT title_ciphertext, detail_ciphertext FROM tasks').all()
+        .flatMap(Object.values),
+      ...database.prepare(`
+        SELECT title_ciphertext, extracted_data_ciphertext FROM documents
+      `).all().flatMap(Object.values),
+      ...database.prepare('SELECT note_ciphertext FROM consents').all()
+        .flatMap(Object.values),
+      ...database.prepare('SELECT display_ciphertext FROM search_tokens').all()
+        .flatMap(Object.values),
+      ...database.prepare(`
+        SELECT file_name_ciphertext, rows_ciphertext, error_csv_ciphertext FROM import_jobs
+      `).all().flatMap(Object.values),
+      ...database.prepare('SELECT value_ciphertext FROM ocr_fields').all()
+        .flatMap(Object.values),
+      ...database.prepare(`
+        SELECT previous_value_ciphertext, corrected_value_ciphertext FROM ocr_corrections
+      `).all().flatMap(Object.values)
     ];
     const result = {
       currentKeyId: dataProtection?.currentKeyId || null,
@@ -2991,7 +3796,35 @@ export function createAppDatabase(filename, { dataProtection = null } = {}) {
     }
   }
 
+  const workflowRepository = createWorkflowRepository({
+    engine: 'sqlite',
+    driver: database,
+    dataProtection,
+    mutate: runOrganizationAsyncMutation,
+    audit: (
+      executor,
+      organizationId,
+      actorUserId,
+      action,
+      entityType,
+      entityId,
+      metadata
+    ) => recordOrganizationAudit(
+      organizationId,
+      actorUserId,
+      action,
+      entityType,
+      entityId,
+      metadata
+    ),
+    getCustomer: (organizationId, id, accessUserId) =>
+      getOrganizationCustomer(organizationId, id, accessUserId),
+    getPolicy: (organizationId, id, accessUserId) =>
+      getOrganizationPolicy(organizationId, id, accessUserId)
+  });
+
   return {
+    ...workflowRepository,
     backupTo,
     changeOrganizationUserPassword,
     close: () => database.close(),
@@ -3044,9 +3877,12 @@ export function createAppDatabase(filename, { dataProtection = null } = {}) {
     listOrganizationCustomers,
     listOrganizationEvents,
     listOrganizationPolicies,
+    listOrganizationResourcePage,
     listOrganizationUsers,
     listPolicies,
+    phase2MigrationReport,
     protectSensitiveData,
+    recordOrganizationApiAudit,
     recordLoginFailure,
     recordLoginSuccess,
     recoverOrganizationUser,
@@ -3054,8 +3890,10 @@ export function createAppDatabase(filename, { dataProtection = null } = {}) {
     engine: 'sqlite',
     exportPostgresqlSnapshot,
     replaceOrganizationState,
+    replaceOrganizationTeamState,
     resetOrganizationUserPassword,
     setOrganizationUserMfaPending,
+    setOrganizationResourceArchived,
     updateCustomer,
     updateEvent,
     updateOrganizationCustomer,

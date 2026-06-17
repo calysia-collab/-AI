@@ -137,3 +137,33 @@ export function validateStatePayload(payload) {
 
   return { valid: errors.length === 0, errors };
 }
+
+export function validateTeamStatePayload(payload) {
+  if (!isRecord(payload)) return { valid: false, errors: ['資料格式錯誤'] };
+  const errors = [];
+  for (const name of ['teamMembers', 'teamTasks']) {
+    const error = validateCollection(name, payload[name]);
+    if (error) errors.push(error);
+  }
+  if (errors.length) return { valid: false, errors };
+
+  validateUniqueIds('團隊成員', payload.teamMembers, errors);
+  validateUniqueIds('團隊任務', payload.teamTasks, errors);
+  for (const member of payload.teamMembers) {
+    if (!isRecord(member) || !hasText(String(member.id || ''), 100) || !hasText(member.name, 200)) {
+      errors.push('團隊成員缺少有效的 id 或姓名');
+    }
+    if (Number(member.target || 0) < 0 || Number(member.closed || 0) < 0) {
+      errors.push(`團隊成員 ${member.name || member.id || ''} 的件數不可小於 0`);
+    }
+  }
+  for (const task of payload.teamTasks) {
+    if (!isRecord(task) || !hasText(String(task.id || ''), 100) || !hasText(task.title, 1000)) {
+      errors.push('團隊任務缺少有效的 id 或標題');
+    }
+  }
+  if (!Number.isFinite(Number(payload.teamGoal || 0)) || Number(payload.teamGoal || 0) < 0) {
+    errors.push('團隊目標必須是大於或等於 0 的數字');
+  }
+  return { valid: errors.length === 0, errors };
+}

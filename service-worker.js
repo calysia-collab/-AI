@@ -1,4 +1,4 @@
-const CACHE_NAME = 'sasha-workbench-v6';
+const CACHE_NAME = 'sasha-workbench-v8';
 const APP_SHELL = [
   './',
   './index.html',

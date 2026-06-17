@@ -422,6 +422,89 @@ test('limits advisors to customers and related records assigned to their account
   }
 });
 
+test('supports phase 2 cursor pages and reversible archives', () => {
+  const database = createAppDatabase(':memory:');
+  try {
+    database.createOrganization({ id: 'org-phase2', name: 'Phase 2 Organization' });
+    for (const id of ['customer-page-a', 'customer-page-b', 'customer-page-c']) {
+      database.createOrganizationCustomer('org-phase2', 'manager-phase2', {
+        ...sampleState().customers[0],
+        id,
+        name: id
+      });
+    }
+
+    const firstPage = database.listOrganizationResourcePage(
+      'customers',
+      'org-phase2',
+      null,
+      { limit: 2 }
+    );
+    assert.equal(firstPage.items.length, 2);
+    assert.equal(firstPage.hasMore, true);
+
+    const secondPage = database.listOrganizationResourcePage(
+      'customers',
+      'org-phase2',
+      null,
+      {
+        cursor: {
+          id: firstPage.items.at(-1).id,
+          updatedAt: firstPage.items.at(-1).updatedAt
+        },
+        limit: 2
+      }
+    );
+    assert.equal(secondPage.items.length, 1);
+    assert.equal(secondPage.hasMore, false);
+
+    const archived = database.setOrganizationResourceArchived(
+      'customers',
+      'org-phase2',
+      'manager-phase2',
+      'customer-page-a',
+      1,
+      true
+    );
+    assert.equal(archived.item.version, 2);
+    assert.equal(
+      database.listOrganizationCustomers('org-phase2')
+        .some((item) => item.id === 'customer-page-a'),
+      false
+    );
+    assert.deepEqual(
+      database.listOrganizationResourcePage(
+        'customers',
+        'org-phase2',
+        null,
+        { archived: 'only' }
+      ).items.map((item) => item.id),
+      ['customer-page-a']
+    );
+
+    const restored = database.setOrganizationResourceArchived(
+      'customers',
+      'org-phase2',
+      'manager-phase2',
+      'customer-page-a',
+      2,
+      false
+    );
+    assert.equal(restored.item.version, 3);
+    assert.equal(
+      database.listOrganizationCustomers('org-phase2')
+        .some((item) => item.id === 'customer-page-a'),
+      true
+    );
+    assert.deepEqual(
+      database.listOrganizationAuditLogs('org-phase2', 2).map((item) => item.action),
+      ['restore', 'archive']
+    );
+  } finally {
+    database.close();
+  }
+});
+
 test('claims legacy unscoped data for the first owner organization', () => {
   const database = createAppDatabase(':memory:');
   try {

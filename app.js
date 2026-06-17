@@ -247,6 +247,10 @@ function applyAuthenticatedUser(result) {
     'hidden',
     currentUser?.role === 'viewer'
   );
+  document.getElementById('openCustomerImport')?.classList.toggle(
+    'hidden',
+    !['owner', 'manager'].includes(currentUser?.role)
+  );
   setAuthMessage('');
 }
 
@@ -616,6 +620,8 @@ const policyFile = document.getElementById('policyFile');
 const dropZone = document.getElementById('dropZone');
 let scanTimer;
 let currentPolicyAttachment = null;
+let currentOcrJob = null;
+let ocrPollTimer = null;
 
 async function uploadPolicyAttachment(file) {
   if (!backendReady) throw new Error('DATABASE_UNAVAILABLE');
@@ -651,6 +657,10 @@ async function handlePolicyFile(file) {
     showToast('圖片超過 10 MB，請先縮小後再上傳');
     return;
   }
+  if (!document.getElementById('policyCustomerSelect').value) {
+    showToast('請先選擇這份保單所屬的客戶');
+    return;
+  }
   const reader = new FileReader();
   reader.onload = () => {
     document.getElementById('policyPreview').src = reader.result;
@@ -684,43 +694,107 @@ async function handlePolicyFile(file) {
     showToast(hint.textContent);
     return;
   }
-  startScan();
+  await startScan();
 }
 
-function startScan() {
-  window.clearInterval(scanTimer);
-  const progress = document.getElementById('scanProgress');
-  const percent = document.getElementById('scanPercent');
-  const status = document.getElementById('scanStatusText');
-  const hint = document.getElementById('scanHint');
-  const scanLine = document.getElementById('scanLine');
-  let value = 0;
-  progress.style.width = '0%';
-  percent.textContent = '0%';
-  scanLine.classList.add('scanning');
+function updateOcrProgress(value, statusText, hintText) {
+  document.getElementById('scanProgress').style.width = `${value}%`;
+  document.getElementById('scanPercent').textContent = `${value}%`;
+  document.getElementById('scanStatusText').textContent = statusText;
+  document.getElementById('scanHint').textContent = hintText;
+}
 
-  scanTimer = window.setInterval(() => {
-    value = Math.min(value + Math.floor(Math.random() * 13) + 6, 100);
-    progress.style.width = `${value}%`;
-    percent.textContent = `${value}%`;
-    if (value < 35) {
-      status.textContent = '正在校正圖片';
-      hint.textContent = '正在檢查圖片清晰度與方向…';
-    } else if (value < 75) {
-      status.textContent = '正在辨識保單欄位';
-      hint.textContent = '讀取保險公司、保單號碼與保障內容…';
-    } else if (value < 100) {
-      status.textContent = '正在整理保障摘要';
-      hint.textContent = '將辨識內容轉換成可編輯欄位…';
-    } else {
-      window.clearInterval(scanTimer);
-      scanLine.classList.remove('scanning');
-      status.textContent = '辨識完成';
-      hint.textContent = '請在下方核對欄位，正式使用應串接 OCR 服務。';
-      document.getElementById('resultPanel').classList.remove('hidden');
-      document.getElementById('resultPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-  }, 180);
+function renderOcrJob(job) {
+  currentOcrJob = job;
+  const fieldByName = new Map(job.fields.map((field) => [field.name, field]));
+  for (const name of [
+    'company',
+    'policyNumber',
+    'type',
+    'startDate',
+    'paymentYears',
+    'coverage',
+    'premium',
+    'summary'
+  ]) {
+    const control = document.getElementById('policyForm').elements[name];
+    const field = fieldByName.get(name);
+    if (!control || !field) continue;
+    control.value = field.value;
+    control.dataset.ocrFieldId = field.id;
+    control.dataset.ocrVersion = field.version;
+    control.dataset.ocrOriginal = field.value;
+    control.classList.toggle('ocr-corrected', field.corrected);
+    const label = control.closest('label');
+    label?.querySelector('.ocr-field-confidence')?.remove();
+    const confidence = document.createElement('span');
+    confidence.className = `ocr-field-confidence${field.confidence < 0.85 ? ' low' : ''}`;
+    confidence.textContent = `可信度 ${Math.round(field.confidence * 100)}%${field.corrected ? '・已人工修正' : ''}`;
+    label?.append(confidence);
+  }
+  const average = job.fields.length
+    ? Math.round(job.fields.reduce((total, field) => total + field.confidence, 0) / job.fields.length * 100)
+    : 0;
+  document.getElementById('ocrJobId').value = job.id;
+  document.getElementById('ocrConfidence').textContent = `${average}%`;
+  document.getElementById('ocrProviderChip').textContent = `辨識服務：${job.provider}`;
+  document.getElementById('resultPanel').classList.remove('hidden');
+  document.getElementById('resultPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function pollOcrJob(jobId) {
+  window.clearTimeout(ocrPollTimer);
+  const response = await apiFetch(`/api/v1/ocr/jobs/${encodeURIComponent(jobId)}`);
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || 'OCR_STATUS_UNAVAILABLE');
+  const job = result.item;
+  currentOcrJob = job;
+  if (job.status === 'queued') {
+    updateOcrProgress(25, '等待辨識服務', '圖片已安全保存，正在安排辨識工作…');
+  } else if (job.status === 'processing') {
+    updateOcrProgress(68, '正在辨識保單欄位', '讀取保險公司、保單號碼與保障內容…');
+  } else if (job.status === 'review_required') {
+    document.getElementById('scanLine').classList.remove('scanning');
+    updateOcrProgress(100, '辨識完成，等待人工核對', '請逐欄確認；修改過的內容會留下修正紀錄。');
+    renderOcrJob(job);
+    return;
+  } else if (job.status === 'failed') {
+    document.getElementById('scanLine').classList.remove('scanning');
+    updateOcrProgress(100, '辨識失敗', `辨識服務回報：${job.errorCode || '未知錯誤'}`);
+    showToast('保單辨識未完成，請確認服務設定後重新上傳');
+    return;
+  } else if (job.status === 'approved') {
+    return;
+  }
+  ocrPollTimer = window.setTimeout(() => {
+    pollOcrJob(jobId).catch((error) => {
+      console.error('OCR status polling failed.', error);
+      showToast('暫時無法取得辨識進度');
+    });
+  }, 700);
+}
+
+async function startScan() {
+  window.clearInterval(scanTimer);
+  window.clearTimeout(ocrPollTimer);
+  const scanLine = document.getElementById('scanLine');
+  scanLine.classList.add('scanning');
+  updateOcrProgress(12, '正在建立辨識工作', '圖片已通過安全掃描，正在送入辨識流程…');
+  const response = await apiFetch('/api/v1/ocr/jobs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      attachmentId: currentPolicyAttachment.id,
+      customerId: document.getElementById('policyCustomerSelect').value
+    })
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    scanLine.classList.remove('scanning');
+    throw new Error(result.error || 'OCR_JOB_CREATE_FAILED');
+  }
+  currentOcrJob = result.item;
+  await pollOcrJob(result.item.id);
 }
 
 policyFile.addEventListener('change', () => {
@@ -746,8 +820,19 @@ dropZone.addEventListener('drop', (event) => {
 
 function resetPolicyUpload() {
   window.clearInterval(scanTimer);
+  window.clearTimeout(ocrPollTimer);
   currentPolicyAttachment = null;
+  currentOcrJob = null;
   policyFile.value = '';
+  document.getElementById('ocrJobId').value = '';
+  document.getElementById('ocrConfidence').textContent = '--';
+  document.querySelectorAll('.ocr-field-confidence').forEach((item) => item.remove());
+  document.querySelectorAll('#policyForm [data-ocr-field-id]').forEach((control) => {
+    delete control.dataset.ocrFieldId;
+    delete control.dataset.ocrVersion;
+    delete control.dataset.ocrOriginal;
+    control.classList.remove('ocr-corrected');
+  });
   document.getElementById('emptyScan').classList.remove('hidden');
   document.getElementById('scanContent').classList.add('hidden');
   document.getElementById('resultPanel').classList.add('hidden');
@@ -1374,7 +1459,10 @@ function renderCustomers() {
       <td><select class="customer-stage-select" data-customer-stage="${escapeHTML(customer.id)}"${currentUser?.role === 'viewer' ? ' disabled' : ''}>${['新名單', '需求訪談', '規劃中', '已成交', '持續服務'].map((item) => `<option${item === customer.stage ? ' selected' : ''}>${item}</option>`).join('')}</select></td>
       <td><span class="followup-date ${followUp.className}"><strong>${followUp.label}</strong><small>${followUp.detail}</small></span></td>
       <td><span class="policy-count-chip">${getCustomerPolicyCount(customer)} 份</span></td>
-      <td>${currentUser?.role === 'viewer' ? '' : `<button class="icon-button small customer-edit" data-edit-customer="${escapeHTML(customer.id)}" aria-label="編輯 ${escapeHTML(customer.name)}" data-icon="more">${icons.more}</button>`}</td>
+      <td><span class="customer-row-actions">
+        <button class="secondary-button customer-360-button" data-open-workspace="${escapeHTML(customer.id)}">360 檢視</button>
+        ${currentUser?.role === 'viewer' ? '' : `<button class="icon-button small customer-edit" data-edit-customer="${escapeHTML(customer.id)}" aria-label="編輯 ${escapeHTML(customer.name)}" data-icon="more">${icons.more}</button>`}
+      </span></td>
     </tr>`;
   }).join('');
   document.getElementById('customerTableBody').innerHTML = tableRows || '<tr><td colspan="7">找不到符合條件的客戶。</td></tr>';
@@ -1385,7 +1473,10 @@ function renderCustomers() {
       return `<article class="customer-card">
         <div class="customer-card-head">
           <span class="customer-person"><span class="customer-avatar">${escapeHTML(customer.name.slice(0, 1))}</span><span><strong>${escapeHTML(customer.name)}</strong><small>${escapeHTML(customer.phone || '未留電話')}</small></span></span>
-          ${currentUser?.role === 'viewer' ? '' : `<button class="icon-button small customer-edit" data-edit-customer="${escapeHTML(customer.id)}" aria-label="編輯 ${escapeHTML(customer.name)}">${icons.more}</button>`}
+          <span class="customer-row-actions">
+            <button class="secondary-button customer-360-button" data-open-workspace="${escapeHTML(customer.id)}">360 檢視</button>
+            ${currentUser?.role === 'viewer' ? '' : `<button class="icon-button small customer-edit" data-edit-customer="${escapeHTML(customer.id)}" aria-label="編輯 ${escapeHTML(customer.name)}">${icons.more}</button>`}
+          </span>
         </div>
         <div class="customer-card-body">
           <span class="customer-card-field"><span>保障需求</span><strong>${escapeHTML(customer.needs || '尚未整理')}</strong></span>
@@ -1441,6 +1532,14 @@ function renderCustomers() {
   });
   document.querySelectorAll('[data-edit-customer]').forEach((button) => {
     button.addEventListener('click', () => openCustomerModal(button.dataset.editCustomer));
+  });
+  document.querySelectorAll('[data-open-workspace]').forEach((button) => {
+    button.addEventListener('click', () => {
+      openCustomerWorkspace(button.dataset.openWorkspace).catch((error) => {
+        console.error('Customer workspace failed to open.', error);
+        showToast('客戶 360 資料暫時無法載入');
+      });
+    });
   });
 }
 
@@ -1504,6 +1603,384 @@ deleteCustomerButton.addEventListener('click', () => {
     console.error('Unable to delete customer.', error);
     showToast('客戶資料暫時無法刪除，請稍後再試');
   });
+});
+
+const customerWorkspaceModal = document.getElementById('customerWorkspaceModal');
+const customerWorkspaceForm = document.getElementById('customerWorkspaceForm');
+let customerWorkspace = null;
+let activeWorkspaceResource = 'contacts';
+
+const workspaceConfigurations = {
+  contacts: {
+    title: '聯絡方式',
+    fields: [
+      { name: 'contactType', label: '類型', type: 'select', options: [['phone', '電話'], ['email', 'Email'], ['address', '地址'], ['other', '其他']] },
+      { name: 'label', label: '標籤', placeholder: '例如：手機、公司、住家' },
+      { name: 'value', label: '聯絡內容', required: true },
+      { name: 'isPrimary', label: '設為主要聯絡方式', type: 'checkbox' }
+    ],
+    summary: (item) => [item.label || item.contactType, item.value]
+  },
+  relationships: {
+    title: '家庭關係',
+    fields: [
+      { name: 'relationshipType', label: '關係', placeholder: '例如：配偶、子女、父母', required: true },
+      { name: 'displayName', label: '姓名', required: true },
+      { name: 'relatedCustomerId', label: '關聯既有客戶', type: 'customers' },
+      { name: 'note', label: '補充說明', type: 'textarea' }
+    ],
+    summary: (item) => [`${item.relationshipType}・${item.displayName}`, item.note || '尚無補充說明']
+  },
+  interactions: {
+    title: '互動紀錄',
+    fields: [
+      { name: 'interactionType', label: '互動類型', type: 'select', options: [['meeting', '面談'], ['phone', '電話'], ['line', 'LINE'], ['email', 'Email'], ['service', '保戶服務']] },
+      { name: 'occurredAt', label: '發生時間', type: 'datetime-local', required: true },
+      { name: 'subject', label: '主題', required: true },
+      { name: 'summary', label: '互動摘要', type: 'textarea' }
+    ],
+    summary: (item) => [item.subject, `${new Date(item.occurredAt).toLocaleString('zh-TW')}・${item.summary || '尚無摘要'}`]
+  },
+  tasks: {
+    title: '服務待辦',
+    fields: [
+      { name: 'title', label: '待辦內容', required: true },
+      { name: 'detail', label: '執行說明', type: 'textarea' },
+      { name: 'assignedUserId', label: '負責帳號', type: 'users' },
+      { name: 'dueAt', label: '到期時間', type: 'datetime-local' },
+      { name: 'status', label: '狀態', type: 'select', options: [['open', '待完成'], ['completed', '已完成'], ['cancelled', '已取消']] },
+      { name: 'priority', label: '優先度', type: 'select', options: [['low', '低'], ['normal', '一般'], ['high', '高'], ['urgent', '緊急']] }
+    ],
+    summary: (item) => [item.title, `${item.status}・${item.dueAt ? new Date(item.dueAt).toLocaleString('zh-TW') : '未設定期限'}`]
+  },
+  documents: {
+    title: '客戶文件',
+    fields: [
+      { name: 'documentType', label: '文件類型', type: 'select', options: [['policy', '保單'], ['consent', '同意書'], ['proposal', '建議書'], ['identity', '身分文件'], ['other', '其他']] },
+      { name: 'title', label: '文件名稱', required: true },
+      { name: 'policyId', label: '關聯保單', type: 'policies' },
+      { name: 'attachmentId', label: '安全附件編號' },
+      { name: 'processingStatus', label: '處理狀態', type: 'select', options: [['pending', '待處理'], ['processing', '處理中'], ['ready', '已完成'], ['failed', '失敗']] },
+      { name: 'extractedData', label: '文件摘要', type: 'textarea' }
+    ],
+    summary: (item) => [item.title, `${item.documentType}・${item.processingStatus}`]
+  },
+  consents: {
+    title: '同意紀錄',
+    fields: [
+      { name: 'consentType', label: '同意類型', placeholder: '例如：個資蒐集、電子通知', required: true },
+      { name: 'status', label: '狀態', type: 'select', options: [['granted', '已同意'], ['withdrawn', '已撤回'], ['expired', '已到期']] },
+      { name: 'grantedAt', label: '同意時間', type: 'datetime-local' },
+      { name: 'withdrawnAt', label: '撤回時間', type: 'datetime-local' },
+      { name: 'expiresAt', label: '到期時間', type: 'datetime-local' },
+      { name: 'evidenceDocumentId', label: '佐證文件編號' },
+      { name: 'note', label: '備註', type: 'textarea' }
+    ],
+    summary: (item) => [item.consentType, `${item.status}・${item.expiresAt ? `到期 ${new Date(item.expiresAt).toLocaleDateString('zh-TW')}` : '未設定到期日'}`]
+  }
+};
+
+function workspaceOptionsMarkup(field) {
+  if (field.type === 'customers') {
+    return [['', '不關聯'], ...customers.map((item) => [item.id, item.name])];
+  }
+  if (field.type === 'users') {
+    return [['', '未指派'], ...organizationUsers
+      .filter((item) => item.active !== false && item.role !== 'viewer')
+      .map((item) => [item.id, item.displayName])];
+  }
+  if (field.type === 'policies') {
+    return [['', '不關聯'], ...savedPolicies.map((item) => [
+      item.id,
+      `${getCustomerName(item.customerId) || item.customer}・${item.company} ${item.type}`
+    ])];
+  }
+  return field.options || [];
+}
+
+function workspaceFieldMarkup(field) {
+  if (field.type === 'checkbox') {
+    return `<label class="workspace-checkbox"><input name="${field.name}" type="checkbox"> ${field.label}</label>`;
+  }
+  if (['select', 'customers', 'users', 'policies'].includes(field.type)) {
+    return `<label>${field.label}<select name="${field.name}"${field.required ? ' required' : ''}>${workspaceOptionsMarkup(field).map(([value, label]) => `<option value="${escapeHTML(value)}">${escapeHTML(label)}</option>`).join('')}</select></label>`;
+  }
+  if (field.type === 'textarea') {
+    return `<label>${field.label}<textarea name="${field.name}" rows="3"${field.required ? ' required' : ''} placeholder="${escapeHTML(field.placeholder || '')}"></textarea></label>`;
+  }
+  return `<label>${field.label}<input name="${field.name}" type="${field.type || 'text'}"${field.required ? ' required' : ''} placeholder="${escapeHTML(field.placeholder || '')}"></label>`;
+}
+
+function resetCustomerWorkspaceForm() {
+  customerWorkspaceForm.reset();
+  customerWorkspaceForm.elements.recordId.value = '';
+  customerWorkspaceForm.elements.version.value = '';
+  document.getElementById('resetWorkspaceForm').classList.add('hidden');
+  document.getElementById('workspaceFormTitle').textContent = `新增${workspaceConfigurations[activeWorkspaceResource].title}`;
+  if (activeWorkspaceResource === 'interactions') {
+    customerWorkspaceForm.elements.occurredAt.value = new Date().toISOString().slice(0, 16);
+  }
+  if (activeWorkspaceResource === 'tasks') {
+    customerWorkspaceForm.elements.status.value = 'open';
+    customerWorkspaceForm.elements.priority.value = 'normal';
+  }
+  if (activeWorkspaceResource === 'documents') {
+    customerWorkspaceForm.elements.processingStatus.value = 'pending';
+  }
+  if (activeWorkspaceResource === 'consents') {
+    customerWorkspaceForm.elements.status.value = 'granted';
+    customerWorkspaceForm.elements.grantedAt.value = new Date().toISOString().slice(0, 16);
+  }
+}
+
+function renderCustomerWorkspace() {
+  const configuration = workspaceConfigurations[activeWorkspaceResource];
+  const items = customerWorkspace?.[activeWorkspaceResource] || [];
+  document.getElementById('customerWorkspaceTabs').querySelectorAll('button').forEach((button) => {
+    button.classList.toggle('active', button.dataset.workspaceTab === activeWorkspaceResource);
+  });
+  document.getElementById('customerWorkspaceFields').innerHTML = configuration.fields
+    .map(workspaceFieldMarkup)
+    .join('');
+  customerWorkspaceForm.classList.toggle('hidden', currentUser?.role === 'viewer');
+  document.getElementById('customerWorkspaceList').innerHTML = items.length
+    ? items.map((item) => {
+      const [title, detail] = configuration.summary(item);
+      return `<article class="workspace-record">
+        <div><strong>${escapeHTML(title || '未命名紀錄')}</strong><small>${escapeHTML(detail || '')}</small></div>
+        ${currentUser?.role === 'viewer' ? '' : `<div class="workspace-record-actions">
+          <button class="icon-button small" data-edit-workspace="${escapeHTML(item.id)}" aria-label="編輯">${icons.more}</button>
+          <button class="icon-button small" data-delete-workspace="${escapeHTML(item.id)}" aria-label="刪除">${icons.close}</button>
+        </div>`}
+      </article>`;
+    }).join('')
+    : '<div class="workspace-empty">這個分類目前沒有紀錄。</div>';
+  resetCustomerWorkspaceForm();
+
+  document.querySelectorAll('[data-edit-workspace]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const item = items.find((record) => idsMatch(record.id, button.dataset.editWorkspace));
+      if (!item) return;
+      customerWorkspaceForm.elements.recordId.value = item.id;
+      customerWorkspaceForm.elements.version.value = item.version;
+      for (const field of configuration.fields) {
+        const control = customerWorkspaceForm.elements[field.name];
+        if (!control) continue;
+        if (field.type === 'checkbox') {
+          control.checked = Boolean(item[field.name]);
+        } else if (field.type === 'datetime-local' && item[field.name]) {
+          control.value = String(item[field.name]).slice(0, 16);
+        } else {
+          control.value = item[field.name] ?? '';
+        }
+      }
+      document.getElementById('workspaceFormTitle').textContent = `編輯${configuration.title}`;
+      document.getElementById('resetWorkspaceForm').classList.remove('hidden');
+    });
+  });
+
+  document.querySelectorAll('[data-delete-workspace]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const item = items.find((record) => idsMatch(record.id, button.dataset.deleteWorkspace));
+      if (!item || !window.confirm('確定要刪除這筆服務紀錄嗎？')) return;
+      const response = await apiFetch(
+        `/api/v1/customers/${encodeURIComponent(customerWorkspace.customer.id)}/${activeWorkspaceResource}/${encodeURIComponent(item.id)}`,
+        { method: 'DELETE', headers: { 'If-Match': String(item.version) } }
+      );
+      if (!response.ok) {
+        showToast(response.status === 409 ? '紀錄已被其他裝置更新' : '紀錄刪除失敗');
+        return;
+      }
+      customerWorkspace[activeWorkspaceResource] = items.filter((record) => !idsMatch(record.id, item.id));
+      renderCustomerWorkspace();
+      showToast('服務紀錄已刪除');
+    });
+  });
+}
+
+async function openCustomerWorkspace(customerId) {
+  const response = await apiFetch(`/api/v1/customers/${encodeURIComponent(customerId)}/workspace`);
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || 'WORKSPACE_UNAVAILABLE');
+  customerWorkspace = result.workspace;
+  activeWorkspaceResource = 'contacts';
+  document.getElementById('customerWorkspaceTitle').textContent = `${customerWorkspace.customer.name}・客戶 360`;
+  document.getElementById('customerWorkspaceSubtitle').textContent = `${customerWorkspace.customer.stage}・${customerWorkspace.policies.length} 份保單・所有紀錄均保存至正式資料庫`;
+  renderCustomerWorkspace();
+  customerWorkspaceModal.classList.add('open');
+  customerWorkspaceModal.setAttribute('aria-hidden', 'false');
+}
+
+function closeCustomerWorkspace() {
+  customerWorkspaceModal.classList.remove('open');
+  customerWorkspaceModal.setAttribute('aria-hidden', 'true');
+  customerWorkspace = null;
+}
+
+document.querySelectorAll('[data-close-workspace]').forEach((button) => button.addEventListener('click', closeCustomerWorkspace));
+customerWorkspaceModal.addEventListener('click', (event) => {
+  if (event.target === customerWorkspaceModal) closeCustomerWorkspace();
+});
+document.querySelectorAll('[data-workspace-tab]').forEach((button) => {
+  button.addEventListener('click', () => {
+    activeWorkspaceResource = button.dataset.workspaceTab;
+    renderCustomerWorkspace();
+  });
+});
+document.getElementById('resetWorkspaceForm').addEventListener('click', resetCustomerWorkspaceForm);
+customerWorkspaceForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!customerWorkspace) return;
+  const data = Object.fromEntries(new FormData(customerWorkspaceForm));
+  for (const field of workspaceConfigurations[activeWorkspaceResource].fields) {
+    if (field.type === 'checkbox') data[field.name] = customerWorkspaceForm.elements[field.name].checked;
+  }
+  delete data.recordId;
+  delete data.version;
+  const recordId = customerWorkspaceForm.elements.recordId.value;
+  const version = customerWorkspaceForm.elements.version.value;
+  const path = `/api/v1/customers/${encodeURIComponent(customerWorkspace.customer.id)}/${activeWorkspaceResource}${recordId ? `/${encodeURIComponent(recordId)}` : ''}`;
+  const response = await apiFetch(path, {
+    method: recordId ? 'PATCH' : 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(recordId ? { 'If-Match': version } : {})
+    },
+    body: JSON.stringify(data)
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    showToast(response.status === 409
+      ? '這筆紀錄已被其他裝置修改，請重新開啟'
+      : result.details?.[0] || '服務紀錄未通過檢查');
+    return;
+  }
+  const items = customerWorkspace[activeWorkspaceResource];
+  const existingIndex = items.findIndex((item) => idsMatch(item.id, result.item.id));
+  if (existingIndex >= 0) items[existingIndex] = result.item;
+  else items.unshift(result.item);
+  renderCustomerWorkspace();
+  showToast(`${workspaceConfigurations[activeWorkspaceResource].title}已儲存`);
+});
+
+const customerImportModal = document.getElementById('customerImportModal');
+const customerImportFile = document.getElementById('customerImportFile');
+let activeImportJobId = null;
+let importPollTimer = null;
+
+function closeCustomerImport() {
+  customerImportModal.classList.remove('open');
+  customerImportModal.setAttribute('aria-hidden', 'true');
+}
+
+function renderImportJob(job) {
+  const percent = job.total ? Math.round(job.processed / job.total * 100) : 0;
+  const statusNames = {
+    queued: '等待開始',
+    processing: '正在背景匯入',
+    completed: '匯入完成',
+    completed_with_errors: '匯入完成，部分資料需修正',
+    cancelled: '匯入已取消',
+    failed: '匯入失敗'
+  };
+  document.getElementById('importStatusLabel').textContent = statusNames[job.status] || job.status;
+  document.getElementById('importProgressDetail').textContent = `${job.processed} / ${job.total}・成功 ${job.imported}・失敗 ${job.failed}`;
+  document.getElementById('customerImportProgressBar').style.width = `${percent}%`;
+  document.getElementById('cancelCustomerImport').classList.toggle(
+    'hidden',
+    !['queued', 'processing'].includes(job.status)
+  );
+  document.getElementById('downloadImportErrors').classList.toggle('hidden', !job.failed);
+}
+
+async function pollImportJob(jobId) {
+  window.clearTimeout(importPollTimer);
+  const response = await apiFetch(`/api/v1/import-jobs/${encodeURIComponent(jobId)}`);
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || 'IMPORT_STATUS_UNAVAILABLE');
+  renderImportJob(result.item);
+  if (['queued', 'processing'].includes(result.item.status)) {
+    importPollTimer = window.setTimeout(() => {
+      pollImportJob(jobId).catch((error) => {
+        console.error('Import status polling failed.', error);
+        showToast('暫時無法取得匯入進度');
+      });
+    }, 700);
+  } else {
+    await initializeBackendSync();
+    showToast(`客戶匯入工作已完成：成功 ${result.item.imported} 筆`);
+  }
+}
+
+document.getElementById('openCustomerImport').addEventListener('click', () => {
+  customerImportFile.value = '';
+  activeImportJobId = null;
+  document.getElementById('startCustomerImport').disabled = true;
+  document.getElementById('customerImportProgress').classList.add('hidden');
+  customerImportModal.classList.add('open');
+  customerImportModal.setAttribute('aria-hidden', 'false');
+});
+document.querySelectorAll('[data-close-import]').forEach((button) => button.addEventListener('click', closeCustomerImport));
+customerImportModal.addEventListener('click', (event) => {
+  if (event.target === customerImportModal) closeCustomerImport();
+});
+customerImportFile.addEventListener('change', () => {
+  document.getElementById('startCustomerImport').disabled = !customerImportFile.files[0];
+});
+document.getElementById('startCustomerImport').addEventListener('click', async () => {
+  const file = customerImportFile.files[0];
+  if (!file) return;
+  const extension = file.name.split('.').pop()?.toLowerCase();
+  const contentType = extension === 'xlsx'
+    ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    : extension === 'csv'
+      ? 'text/csv'
+      : '';
+  if (!contentType) {
+    showToast('只支援 CSV 或 XLSX 檔案');
+    return;
+  }
+  const response = await apiFetch('/api/v1/import-jobs', {
+    method: 'POST',
+    headers: {
+      'Content-Type': contentType,
+      'X-File-Name': encodeURIComponent(file.name)
+    },
+    body: file
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    showToast(result.error === 'IMPORT_NAME_COLUMN_REQUIRED'
+      ? '匯入檔第一列必須包含「客戶姓名」'
+      : '匯入檔無法讀取，請確認格式');
+    return;
+  }
+  activeImportJobId = result.item.id;
+  document.getElementById('customerImportProgress').classList.remove('hidden');
+  renderImportJob(result.item);
+  await pollImportJob(activeImportJobId);
+});
+document.getElementById('cancelCustomerImport').addEventListener('click', async () => {
+  if (!activeImportJobId) return;
+  const response = await apiFetch(`/api/v1/import-jobs/${encodeURIComponent(activeImportJobId)}`, {
+    method: 'DELETE'
+  });
+  const result = await response.json().catch(() => ({}));
+  if (response.ok) renderImportJob(result.item);
+});
+document.getElementById('downloadImportErrors').addEventListener('click', async () => {
+  if (!activeImportJobId) return;
+  const response = await apiFetch(`/api/v1/import-jobs/${encodeURIComponent(activeImportJobId)}/errors`);
+  if (!response.ok) {
+    showToast('目前沒有可下載的錯誤明細');
+    return;
+  }
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `客戶匯入錯誤-${activeImportJobId}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
 });
 
 ['customerSearch', 'customerStageFilter', 'customerOwnerFilter'].forEach((id) => {
@@ -1616,10 +2093,31 @@ document.getElementById('checkLinks').addEventListener('click', (event) => {
   }, 700);
 });
 
-document.getElementById('globalSearch').addEventListener('keydown', (event) => {
+document.getElementById('globalSearch').addEventListener('keydown', async (event) => {
   if (event.key === 'Enter') {
     const query = event.currentTarget.value.trim();
     if (!query) return;
+    if (backendReady && query.length >= 2) {
+      try {
+        const response = await apiFetch(`/api/v1/search?q=${encodeURIComponent(query)}&limit=10`);
+        const result = await response.json().catch(() => ({}));
+        const match = result.items?.[0];
+        if (response.ok && match) {
+          if (match.type === 'customer') {
+            goToPage('customers');
+            document.getElementById('customerSearch').value = query;
+            renderCustomers();
+            showToast(`找到客戶：${match.display}`);
+          } else {
+            goToPage('policy');
+            showToast(`找到保單：${match.display}`);
+          }
+          return;
+        }
+      } catch (error) {
+        console.warn('Server search unavailable; using current page data.', error);
+      }
+    }
     const customerMatch = customers.find((customer) => `${customer.name}${customer.phone}${customer.email}${customer.needs}${customer.owner}`.includes(query));
     const policyMatch = savedPolicies.find((policy) => `${getCustomerName(policy.customerId) || policy.customer}${policy.company}${policy.type}${policy.policyNumber}`.includes(query));
     if (customerMatch) {
@@ -1649,6 +2147,8 @@ document.addEventListener('keydown', (event) => {
     closeCompareModal();
     closeMemberModal();
     closeCustomerModal();
+    closeCustomerWorkspace();
+    closeCustomerImport();
     closeAccountModal();
     closeSettingsModal();
   }
@@ -1870,9 +2370,6 @@ function rememberBackendRevision() {
 function getBackendSnapshot() {
   return {
     expectedRevision: backendRevision,
-    customers,
-    policies: savedPolicies,
-    events,
     teamMembers,
     teamTasks,
     teamGoal: customTeamGoal
@@ -1923,7 +2420,7 @@ async function pushStateToBackend() {
 
   backendSyncInFlight = true;
   try {
-    const response = await apiFetch('/api/state', {
+    const response = await apiFetch('/api/v1/team-state', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(getBackendSnapshot())
@@ -2006,10 +2503,16 @@ function queueEventMutation(operation) {
 async function requestEventMutation(operation) {
   await waitForBackendSyncIdle();
   const isCreate = operation.method === 'POST';
-  const path = isCreate ? '/api/events' : `/api/events/${encodeURIComponent(operation.eventId)}`;
+  const path = isCreate
+    ? '/api/v1/events'
+    : `/api/v1/events/${encodeURIComponent(operation.eventId)}`;
+  const headers = { 'Content-Type': 'application/json' };
+  if (!isCreate && operation.payload?.expectedVersion) {
+    headers['If-Match'] = String(operation.payload.expectedVersion);
+  }
   const response = await apiFetch(path, {
     method: operation.method,
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(operation.payload)
   });
   const result = await response.json().catch(() => ({}));
@@ -2019,11 +2522,15 @@ async function requestEventMutation(operation) {
 async function requestResourceMutation(resource, method, itemId, payload) {
   await waitForBackendSyncIdle();
   const path = itemId
-    ? `/api/${resource}/${encodeURIComponent(itemId)}`
-    : `/api/${resource}`;
+    ? `/api/v1/${resource}/${encodeURIComponent(itemId)}`
+    : `/api/v1/${resource}`;
+  const headers = { 'Content-Type': 'application/json' };
+  if (itemId && payload?.expectedVersion) {
+    headers['If-Match'] = String(payload.expectedVersion);
+  }
   const response = await apiFetch(path, {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(payload)
   });
   const result = await response.json().catch(() => ({}));
@@ -2164,6 +2671,57 @@ async function deleteCurrentCustomer() {
 }
 
 async function savePolicyForm(form) {
+  if (currentOcrJob) {
+    const controls = [...form.querySelectorAll('[data-ocr-field-id]')];
+    for (const control of controls) {
+      if (control.value === control.dataset.ocrOriginal) continue;
+      const response = await apiFetch(
+        `/api/v1/ocr/jobs/${encodeURIComponent(currentOcrJob.id)}/fields/${encodeURIComponent(control.dataset.ocrFieldId)}`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            'If-Match': control.dataset.ocrVersion
+          },
+          body: JSON.stringify({ value: control.value })
+        }
+      );
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        showToast(response.status === 409
+          ? '辨識欄位已在其他裝置更新，請重新檢閱'
+          : '人工修正尚未保存');
+        return;
+      }
+      currentOcrJob = result.item;
+    }
+    const approvalResponse = await apiFetch(
+      `/api/v1/ocr/jobs/${encodeURIComponent(currentOcrJob.id)}/approve`,
+      { method: 'POST' }
+    );
+    const approval = await approvalResponse.json().catch(() => ({}));
+    if (!approvalResponse.ok) {
+      showToast(approvalResponse.status === 409
+        ? '這份辨識工作目前不能核准，請重新檢閱狀態'
+        : '保單核准建檔失敗');
+      return;
+    }
+    backendRevision = Number(approval.revision || backendRevision);
+    rememberBackendRevision();
+    const existingIndex = savedPolicies.findIndex((item) => idsMatch(item.id, approval.policy.id));
+    if (existingIndex >= 0) {
+      savedPolicies[existingIndex] = normalizePolicy(approval.policy);
+    } else {
+      savedPolicies.unshift(normalizePolicy(approval.policy));
+    }
+    savePolicies({ sync: false });
+    renderPolicies();
+    renderCustomers();
+    showToast('辨識內容已人工確認，保單與修正紀錄已正式保存');
+    resetPolicyUpload();
+    return;
+  }
+
   const data = Object.fromEntries(new FormData(form));
   const customer = customers.find((item) => idsMatch(item.id, data.customerId));
   if (!customer) {

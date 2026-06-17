@@ -1,14 +1,25 @@
-FROM node:24.14.0-alpine
+FROM node:24.14.0-alpine AS base
 
-ENV NODE_ENV=production
 WORKDIR /app
 
 COPY package.json package-lock.json .npmrc ./
+
+FROM base AS verification
+
+RUN npm ci
+COPY . .
+RUN npm run verify:release \
+  && npm audit --omit=dev --audit-level=high
+
+FROM base AS production
+
+ENV NODE_ENV=production
 RUN npm ci --omit=dev && npm cache clean --force
 
 COPY . .
-RUN addgroup -S sasha && adduser -S -G sasha sasha \
-  && mkdir -p /app/.data \
+RUN rm -rf /app/.github \
+  && addgroup -S sasha && adduser -S -G sasha sasha \
+  && mkdir -p /app/.data/attachments \
   && chown -R sasha:sasha /app
 
 USER sasha

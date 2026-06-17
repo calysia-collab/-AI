@@ -18,7 +18,11 @@ test('encrypts sensitive values and rejects tampered ciphertext', () => {
   assert.notEqual(encrypted, 'TOTP-SECRET');
   assert.equal(security.decrypt(encrypted), 'TOTP-SECRET');
 
-  const tampered = `${encrypted.slice(0, -1)}${encrypted.endsWith('A') ? 'B' : 'A'}`;
+  const parts = encrypted.split('.');
+  const ciphertext = Buffer.from(parts[3], 'base64url');
+  ciphertext[0] ^= 0x01;
+  parts[3] = ciphertext.toString('base64url');
+  const tampered = parts.join('.');
   assert.throws(() => security.decrypt(tampered));
 });
 
@@ -77,6 +81,8 @@ test('production startup fails closed when required security services are missin
     SASHA_DATA_KEY_ID: '2026-06',
     SASHA_DATA_KEYS: '{"2026-06":"key"}',
     SASHA_MASTER_KEY: 'key',
+    SASHA_OCR_ENDPOINT: 'https://ocr.example.invalid/v1/extract',
+    SASHA_OCR_PROVIDER: 'http',
     SASHA_TRUST_PROXY: 'true'
   }));
 });

@@ -1,6 +1,9 @@
 .data
 .git
-.github
+.github/*
+!.github/workflows/
+.github/workflows/*
+!.github/workflows/staging-gate.yml
 .tmp*
 backups
 coverage

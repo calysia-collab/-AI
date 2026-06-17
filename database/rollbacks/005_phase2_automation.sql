@@ -1,0 +1,4 @@
+BEGIN;
+DROP TABLE IF EXISTS import_jobs;
+DROP TABLE IF EXISTS search_tokens;
+COMMIT;

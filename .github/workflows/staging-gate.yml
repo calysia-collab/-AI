@@ -54,6 +54,10 @@ jobs:
         run: >-
           docker compose -f deploy/staging/compose.yml exec -T app
           node scripts/test-postgresql-integration.mjs
+      - name: Verify PostgreSQL 100k pagination and blind-index search
+        run: >-
+          docker compose -f deploy/staging/compose.yml exec -T app
+          node scripts/test-phase2-postgresql-scale.mjs
       - name: Verify real ClamAV clean and infected scans
         run: >-
           docker compose -f deploy/staging/compose.yml exec -T app
@@ -83,8 +87,20 @@ jobs:
             psql -U sasha -d sasha_restore -Atc 'SELECT count(*) FROM users')"
           ATTACHMENTS="$(docker compose -f deploy/staging/compose.yml exec -T postgres \
             psql -U sasha -d sasha_restore -Atc 'SELECT count(*) FROM attachments')"
+          IMPORT_JOBS="$(docker compose -f deploy/staging/compose.yml exec -T postgres \
+            psql -U sasha -d sasha_restore -Atc 'SELECT count(*) FROM import_jobs')"
+          SEARCH_TOKENS="$(docker compose -f deploy/staging/compose.yml exec -T postgres \
+            psql -U sasha -d sasha_restore -Atc 'SELECT count(*) FROM search_tokens')"
+          OCR_JOBS="$(docker compose -f deploy/staging/compose.yml exec -T postgres \
+            psql -U sasha -d sasha_restore -Atc 'SELECT count(*) FROM ocr_jobs')"
+          OCR_CORRECTIONS="$(docker compose -f deploy/staging/compose.yml exec -T postgres \
+            psql -U sasha -d sasha_restore -Atc 'SELECT count(*) FROM ocr_corrections')"
           test "$USERS" -ge 1
           test "$ATTACHMENTS" -ge 1
+          test "$IMPORT_JOBS" -ge 1
+          test "$SEARCH_TOKENS" -ge 1
+          test "$OCR_JOBS" -ge 1
+          test "$OCR_CORRECTIONS" -ge 1
           rm -f staging-postgresql.dump
       - name: Upload staging validation report
         if: always()

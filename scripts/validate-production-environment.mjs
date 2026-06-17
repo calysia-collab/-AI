@@ -37,5 +37,7 @@ console.log(JSON.stringify({
   dataKeyId: protection.currentKeyId,
   secureCookie: process.env.SASHA_COOKIE_SECURE === 'true',
   trustedProxy: process.env.SASHA_TRUST_PROXY === 'true',
-  clamavHostConfigured: Boolean(process.env.SASHA_CLAMD_HOST)
+  clamavHostConfigured: Boolean(process.env.SASHA_CLAMD_HOST),
+  ocrProvider: process.env.SASHA_OCR_PROVIDER,
+  ocrEndpoint: new URL(process.env.SASHA_OCR_ENDPOINT).origin
 }, null, 2));

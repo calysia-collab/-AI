@@ -1,5 +1,8 @@
 {
   "001_initial_schema.sql": "85423dec7e1473f76b818a6ca1eadcaa3ab3f80d9eaf593f4172bf60f6ad96c6",
   "002_customer_owner_assignment.sql": "2a4b1e20acf4d22d830d0da917556d7350456b75c770fc11d74530fa6711b75b",
-  "003_data_protection_and_attachments.sql": "50a97e322c6c968b980ded24e40823c1df3a876141578eb0ea4c0280ad9ff05f"
+  "003_data_protection_and_attachments.sql": "50a97e322c6c968b980ded24e40823c1df3a876141578eb0ea4c0280ad9ff05f",
+  "004_phase2_domain_model.sql": "ec10559ec7d48747b82dc7114e65f2ba72f4dc8948227826aaab09dabc0f78b2",
+  "005_phase2_automation.sql": "4df1adb911db708c7c18dbfa7dd2d4744481f63bf13f65578cabaf3d8412839b",
+  "006_phase3_ocr_workflow.sql": "f225859fe198a62bbc934ec14be9fb0645af80a53f9df07d68b5f29dd5cee811"
 }

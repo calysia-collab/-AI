@@ -1,16 +1,32 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { rm } from 'node:fs/promises';
+import { createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { hashPassword } from '../api/auth.mjs';
 import { createSecurityService } from '../api/security.mjs';
 
+function findOpenPort() {
+  return new Promise((resolve, reject) => {
+    const probe = createNetServer();
+    probe.unref();
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const address = probe.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      probe.close((error) => error ? reject(error) : resolve(port));
+    });
+  });
+}
+
 process.env.SASHA_DB_PATH = ':memory:';
 process.env.SASHA_MASTER_KEY = Buffer.alloc(32, 7).toString('base64');
 process.env.SASHA_ATTACHMENT_ALLOW_UNSCANNED = 'true';
 process.env.SASHA_ATTACHMENT_DIR = join(tmpdir(), `sasha-server-attachments-${process.pid}`);
+process.env.PORT = String(await findOpenPort());
+const baseUrl = `http://127.0.0.1:${process.env.PORT}`;
 const testSecurity = createSecurityService(Buffer.alloc(32, 7));
 const { database, server } = await import('../server.mjs');
 
@@ -31,7 +47,7 @@ async function authenticatedFetch(path, options = {}) {
   if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
     headers.set('X-CSRF-Token', csrfToken);
   }
-  return fetch(`http://127.0.0.1:4173${path}`, { ...options, headers });
+  return fetch(`${baseUrl}${path}`, { ...options, headers });
 }
 
 async function sessionFetch(path, cookie, token, options = {}) {
@@ -41,19 +57,31 @@ async function sessionFetch(path, cookie, token, options = {}) {
   if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
     headers.set('X-CSRF-Token', token);
   }
-  return fetch(`http://127.0.0.1:4173${path}`, { ...options, headers });
+  return fetch(`${baseUrl}${path}`, { ...options, headers });
+}
+
+async function waitForApiItem(path, predicate, timeout = 4_000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeout) {
+    const response = await authenticatedFetch(path);
+    const payload = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(payload));
+    if (predicate(payload.item)) return payload.item;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  }
+  throw new Error(`Timed out waiting for ${path}.`);
 }
 
 test.before(async () => {
   await new Promise((resolve) => server.listening ? resolve() : server.once('listening', resolve));
 
-  const statusResponse = await fetch('http://127.0.0.1:4173/api/auth/status');
+  const statusResponse = await fetch(`${baseUrl}/api/auth/status`);
   initialAuthStatus = await statusResponse.json();
 
-  const unauthenticatedResponse = await fetch('http://127.0.0.1:4173/api/state');
+  const unauthenticatedResponse = await fetch(`${baseUrl}/api/state`);
   unauthenticatedStateStatus = unauthenticatedResponse.status;
 
-  const setupResponse = await fetch('http://127.0.0.1:4173/api/auth/setup', {
+  const setupResponse = await fetch(`${baseUrl}/api/auth/setup`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -76,7 +104,7 @@ test.after(async () => {
 });
 
 test('serves the application with baseline security headers', async () => {
-  const response = await fetch('http://127.0.0.1:4173/');
+  const response = await fetch(`${baseUrl}/`);
   const html = await response.text();
 
   assert.equal(response.status, 200);
@@ -88,13 +116,13 @@ test('serves the application with baseline security headers', async () => {
 });
 
 test('serves the PWA manifest with the correct content type', async () => {
-  const response = await fetch('http://127.0.0.1:4173/manifest.webmanifest');
+  const response = await fetch(`${baseUrl}/manifest.webmanifest`);
   assert.equal(response.status, 200);
   assert.match(response.headers.get('content-type') || '', /application\/manifest\+json/);
 });
 
 test('provides a database-backed public health endpoint', async () => {
-  const response = await fetch('http://127.0.0.1:4173/api/health');
+  const response = await fetch(`${baseUrl}/api/health`);
   const body = await response.json();
   assert.equal(response.status, 200);
   assert.equal(body.status, 'ok');
@@ -143,30 +171,24 @@ test('requires initial owner setup and protects application data', () => {
   assert.ok(csrfToken.length >= 20);
 });
 
-test('validates CSRF and saves synchronized application state', async () => {
+test('validates CSRF and saves versioned team state without replacing customer records', async () => {
   const currentState = await (await authenticatedFetch('/api/state')).json();
   const payload = {
     expectedRevision: currentState.revision,
-    customers: [{
-      id: 'customer-api-1',
-      name: '測試客戶',
-      phone: '',
-      email: '',
-      birthday: '',
-      owner: '張經理',
-      stage: '新名單',
-      nextFollowUp: '',
-      needs: '',
-      note: ''
+    teamMembers: [{
+      id: 'member-api-1',
+      name: '張經理',
+      role: '團隊經理',
+      specialty: '團隊經營',
+      target: 10,
+      closed: 5,
+      owner: true
     }],
-    policies: [],
-    events: [],
-    teamMembers: [],
     teamTasks: [],
-    teamGoal: 0
+    teamGoal: 10
   };
 
-  const missingCsrfResponse = await fetch('http://127.0.0.1:4173/api/state', {
+  const missingCsrfResponse = await fetch(`${baseUrl}/api/v1/team-state`, {
     method: 'PUT',
     headers: {
       Cookie: sessionCookie,
@@ -176,7 +198,7 @@ test('validates CSRF and saves synchronized application state', async () => {
   });
   assert.equal(missingCsrfResponse.status, 403);
 
-  const saveResponse = await authenticatedFetch('/api/state', {
+  const saveResponse = await authenticatedFetch('/api/v1/team-state', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
@@ -188,14 +210,22 @@ test('validates CSRF and saves synchronized application state', async () => {
   const stateResponse = await authenticatedFetch('/api/state');
   const state = await stateResponse.json();
   assert.equal(state.revision, currentState.revision + 1);
-  assert.equal(state.customers[0].name, '測試客戶');
+  assert.equal(state.teamMembers[0].name, '張經理');
+  assert.equal(state.teamGoal, 10);
 
-  const conflictResponse = await authenticatedFetch('/api/state', {
+  const conflictResponse = await authenticatedFetch('/api/v1/team-state', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   });
   assert.equal(conflictResponse.status, 409);
+
+  const retiredStateWrite = await authenticatedFetch('/api/state', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  assert.equal(retiredStateWrite.status, 410);
 });
 
 test('supports authenticated customer, policy, and event REST resources', async () => {
@@ -286,6 +316,197 @@ test('supports authenticated customer, policy, and event REST resources', async 
   assert.equal(customerDeleteResponse.status, 409);
 });
 
+test('supports the versioned phase 2 API lifecycle, import preview, and audited export', async () => {
+  const statusResponse = await authenticatedFetch('/api/v1/status');
+  const status = await statusResponse.json();
+  assert.equal(statusResponse.status, 200);
+  assert.equal(status.version, 'v1');
+  assert.equal(status.migration.schemaReady, true);
+
+  const createResponse = await authenticatedFetch('/api/v1/customers', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      id: 'customer-v1-1',
+      name: '版本化客戶',
+      owner: '張經理',
+      stage: '新名單'
+    })
+  });
+  const created = await createResponse.json();
+  assert.equal(createResponse.status, 201);
+  assert.equal(created.item.version, 1);
+  assert.match(createResponse.headers.get('etag'), /customer-v1-1-v1/);
+  assert.ok(createResponse.headers.get('x-request-id'));
+
+  const missingPreconditionResponse = await authenticatedFetch(
+    '/api/v1/customers/customer-v1-1',
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stage: '需求訪談' })
+    }
+  );
+  assert.equal(missingPreconditionResponse.status, 428);
+
+  const patchResponse = await authenticatedFetch('/api/v1/customers/customer-v1-1', {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      'If-Match': createResponse.headers.get('etag')
+    },
+    body: JSON.stringify({ stage: '需求訪談' })
+  });
+  const patched = await patchResponse.json();
+  assert.equal(patchResponse.status, 200);
+  assert.equal(patched.item.stage, '需求訪談');
+  assert.equal(patched.item.version, 2);
+
+  const pageResponse = await authenticatedFetch(
+    '/api/v1/customers?limit=1&stage=%E9%9C%80%E6%B1%82%E8%A8%AA%E8%AB%87'
+  );
+  const page = await pageResponse.json();
+  assert.equal(pageResponse.status, 200);
+  assert.equal(page.items.length, 1);
+  assert.equal(page.items[0].id, 'customer-v1-1');
+
+  const archiveResponse = await authenticatedFetch('/api/v1/customers/customer-v1-1', {
+    method: 'DELETE',
+    headers: { 'If-Match': patchResponse.headers.get('etag') }
+  });
+  const archived = await archiveResponse.json();
+  assert.equal(archiveResponse.status, 200);
+  assert.equal(archived.item.version, 3);
+
+  const hiddenResponse = await authenticatedFetch('/api/v1/customers/customer-v1-1');
+  assert.equal(hiddenResponse.status, 404);
+
+  const archivedPageResponse = await authenticatedFetch(
+    '/api/v1/customers?archived=only&limit=100'
+  );
+  const archivedPage = await archivedPageResponse.json();
+  assert.equal(archivedPageResponse.status, 200);
+  assert.ok(archivedPage.items.some((item) => item.id === 'customer-v1-1'));
+
+  const restoreResponse = await authenticatedFetch(
+    '/api/v1/customers/customer-v1-1/restore',
+    {
+      method: 'POST',
+      headers: { 'If-Match': archiveResponse.headers.get('etag') }
+    }
+  );
+  const restored = await restoreResponse.json();
+  assert.equal(restoreResponse.status, 200);
+  assert.equal(restored.item.version, 4);
+
+  const previewResponse = await authenticatedFetch('/api/v1/customers/import/preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      items: [
+        { id: 'customer-v1-import', name: '匯入預覽客戶', stage: '新名單' },
+        { id: 'customer-v1-1', name: '重複客戶', stage: '新名單' }
+      ]
+    })
+  });
+  const preview = await previewResponse.json();
+  assert.equal(previewResponse.status, 200);
+  assert.equal(preview.ready, 1);
+  assert.equal(preview.invalid, 1);
+
+  const exportResponse = await authenticatedFetch('/api/v1/exports/customers?limit=2');
+  const exported = await exportResponse.json();
+  assert.equal(exportResponse.status, 200);
+  assert.equal(exported.resource, 'customers');
+  assert.ok(exported.items.length <= 2);
+});
+
+test('supports customer 360, background import, blind-index search, and OCR approval APIs', async () => {
+  const contactResponse = await authenticatedFetch(
+    '/api/v1/customers/customer-v1-1/contacts',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contactType: 'phone',
+        label: '主要手機',
+        value: '0912-345-678',
+        isPrimary: true
+      })
+    }
+  );
+  const contact = await contactResponse.json();
+  assert.equal(contactResponse.status, 201, JSON.stringify(contact));
+
+  const workspaceResponse = await authenticatedFetch(
+    '/api/v1/customers/customer-v1-1/workspace'
+  );
+  const workspace = await workspaceResponse.json();
+  assert.equal(workspaceResponse.status, 200, JSON.stringify(workspace));
+  assert.equal(workspace.workspace.contacts[0].value, '0912-345-678');
+
+  const searchResponse = await authenticatedFetch(
+    `/api/v1/search?q=${encodeURIComponent('版本化客戶')}`
+  );
+  const search = await searchResponse.json();
+  assert.equal(searchResponse.status, 200, JSON.stringify(search));
+  assert.ok(search.items.some((item) => item.id === 'customer-v1-1'));
+
+  const importResponse = await authenticatedFetch('/api/v1/import-jobs', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'text/csv',
+      'X-File-Name': encodeURIComponent('customers.csv')
+    },
+    body: Buffer.from('客戶姓名,手機\n背景匯入客戶,0900000001\n', 'utf8')
+  });
+  const importJob = await importResponse.json();
+  assert.equal(importResponse.status, 202, JSON.stringify(importJob));
+  const completedImport = await waitForApiItem(
+    `/api/v1/import-jobs/${encodeURIComponent(importJob.item.id)}`,
+    (item) => ['completed', 'completed_with_errors', 'failed'].includes(item.status)
+  );
+  assert.equal(completedImport.status, 'completed');
+
+  const tinyJpeg = Buffer.from([0xff, 0xd8, 0xff, 0xda, 0x00, 0x02, 0xff, 0xd9]);
+  const uploadResponse = await authenticatedFetch('/api/attachments', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/octet-stream',
+      'X-File-Name': encodeURIComponent('ocr-policy.jpg'),
+      'X-Customer-Id': encodeURIComponent('customer-v1-1')
+    },
+    body: tinyJpeg
+  });
+  const upload = await uploadResponse.json();
+  assert.equal(uploadResponse.status, 201, JSON.stringify(upload));
+
+  const ocrResponse = await authenticatedFetch('/api/v1/ocr/jobs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      attachmentId: upload.item.id,
+      customerId: 'customer-v1-1'
+    })
+  });
+  const ocr = await ocrResponse.json();
+  assert.equal(ocrResponse.status, 202, JSON.stringify(ocr));
+  const review = await waitForApiItem(
+    `/api/v1/ocr/jobs/${encodeURIComponent(ocr.item.id)}`,
+    (item) => ['review_required', 'failed'].includes(item.status)
+  );
+  assert.equal(review.status, 'review_required', JSON.stringify(review));
+
+  const approvalResponse = await authenticatedFetch(
+    `/api/v1/ocr/jobs/${encodeURIComponent(review.id)}/approve`,
+    { method: 'POST' }
+  );
+  const approval = await approvalResponse.json();
+  assert.equal(approvalResponse.status, 200, JSON.stringify(approval));
+  assert.equal(approval.item.status, 'approved');
+  assert.equal(approval.policy.customerId, 'customer-v1-1');
+});
+
 test('exposes protected metrics and privacy-minimized audit entries', async () => {
   const metricsResponse = await authenticatedFetch('/api/metrics');
   const metrics = await metricsResponse.json();
@@ -350,7 +571,7 @@ test('allows the owner to create, disable, and reset member accounts', async () 
   assert.ok(list.items.some((item) => item.username === 'test.advisor'));
   assert.doesNotMatch(JSON.stringify(list.items), /passwordHash|passwordSalt/);
 
-  const memberLoginResponse = await fetch('http://127.0.0.1:4173/api/auth/login', {
+  const memberLoginResponse = await fetch(`${baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -399,7 +620,7 @@ test('allows the owner to create, disable, and reset member accounts', async () 
   );
   assert.equal(expiredSessionResponse.status, 401);
 
-  const disabledLoginResponse = await fetch('http://127.0.0.1:4173/api/auth/login', {
+  const disabledLoginResponse = await fetch(`${baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -430,7 +651,7 @@ test('allows the owner to create, disable, and reset member accounts', async () 
   );
   assert.equal(resetResponse.status, 200);
 
-  const oldPasswordResponse = await fetch('http://127.0.0.1:4173/api/auth/login', {
+  const oldPasswordResponse = await fetch(`${baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -440,7 +661,7 @@ test('allows the owner to create, disable, and reset member accounts', async () 
   });
   assert.equal(oldPasswordResponse.status, 401);
 
-  const newPasswordResponse = await fetch('http://127.0.0.1:4173/api/auth/login', {
+  const newPasswordResponse = await fetch(`${baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -509,7 +730,7 @@ test('enforces advisor customer assignments across state and REST APIs', async (
     assert.equal(eventResponse.status, 201);
   }
 
-  const loginResponse = await fetch('http://127.0.0.1:4173/api/auth/login', {
+  const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -594,7 +815,7 @@ test('keeps API data isolated between organizations', async () => {
     passwordSalt: password.salt
   });
 
-  const loginResponse = await fetch('http://127.0.0.1:4173/api/auth/login', {
+  const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -647,7 +868,7 @@ test('keeps API data isolated between organizations', async () => {
 });
 
 test('supports login and invalidates the session after logout', async () => {
-  const loginResponse = await fetch('http://127.0.0.1:4173/api/auth/login', {
+  const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -660,7 +881,7 @@ test('supports login and invalidates the session after logout', async () => {
   assert.equal(loginResponse.status, 200);
   assert.equal(login.user.role, 'owner');
 
-  const logoutResponse = await fetch('http://127.0.0.1:4173/api/auth/logout', {
+  const logoutResponse = await fetch(`${baseUrl}/api/auth/logout`, {
     method: 'POST',
     headers: {
       Cookie: loginCookie,
@@ -669,7 +890,7 @@ test('supports login and invalidates the session after logout', async () => {
   });
   assert.equal(logoutResponse.status, 200);
 
-  const stateResponse = await fetch('http://127.0.0.1:4173/api/state', {
+  const stateResponse = await fetch(`${baseUrl}/api/state`, {
     headers: { Cookie: loginCookie }
   });
   assert.equal(stateResponse.status, 401);
@@ -684,7 +905,7 @@ test('returns a controlled client error for malformed authenticated JSON', async
   assert.equal(response.status, 400);
   assert.deepEqual(await response.json(), { error: 'INVALID_JSON' });
 
-  const healthResponse = await fetch('http://127.0.0.1:4173/api/health');
+  const healthResponse = await fetch(`${baseUrl}/api/health`);
   assert.equal(healthResponse.status, 200);
 });
 
@@ -704,12 +925,12 @@ test('changes the owner password through the API and invalidates the previous se
 
   sessionCookie = cookieFrom(response);
   csrfToken = result.csrfToken;
-  const oldSessionResponse = await fetch('http://127.0.0.1:4173/api/state', {
+  const oldSessionResponse = await fetch(`${baseUrl}/api/state`, {
     headers: { Cookie: previousCookie }
   });
   assert.equal(oldSessionResponse.status, 401);
 
-  const oldPasswordResponse = await fetch('http://127.0.0.1:4173/api/auth/login', {
+  const oldPasswordResponse = await fetch(`${baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -738,7 +959,7 @@ test('supports the complete MFA API lifecycle with one-time recovery codes', asy
   });
   assert.equal(confirmationResponse.status, 200);
 
-  const missingMfaResponse = await fetch('http://127.0.0.1:4173/api/auth/login', {
+  const missingMfaResponse = await fetch(`${baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -748,7 +969,7 @@ test('supports the complete MFA API lifecycle with one-time recovery codes', asy
   });
   assert.equal(missingMfaResponse.status, 428);
 
-  const recoveryLoginResponse = await fetch('http://127.0.0.1:4173/api/auth/login', {
+  const recoveryLoginResponse = await fetch(`${baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -762,7 +983,7 @@ test('supports the complete MFA API lifecycle with one-time recovery codes', asy
   assert.equal(recoveryLoginResponse.status, 200);
   assert.equal(recoveryLogin.user.mfaEnabled, true);
 
-  const reusedCodeResponse = await fetch('http://127.0.0.1:4173/api/auth/login', {
+  const reusedCodeResponse = await fetch(`${baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -788,12 +1009,12 @@ test('supports the complete MFA API lifecycle with one-time recovery codes', asy
   );
   assert.equal(disableResponse.status, 200);
 
-  const expiredMfaSessionResponse = await fetch('http://127.0.0.1:4173/api/state', {
+  const expiredMfaSessionResponse = await fetch(`${baseUrl}/api/state`, {
     headers: { Cookie: recoveryCookie }
   });
   assert.equal(expiredMfaSessionResponse.status, 401);
 
-  const normalLoginResponse = await fetch('http://127.0.0.1:4173/api/auth/login', {
+  const normalLoginResponse = await fetch(`${baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

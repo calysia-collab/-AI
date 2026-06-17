@@ -9,9 +9,11 @@ import {
 import {
   validateCustomerPayload,
   validateEventPayload,
-  validatePolicyPayload,
-  validateStatePayload
+  validatePolicyPayload
 } from './validation.mjs';
+import { createImportJobService } from './import-job-service.mjs';
+import { createOcrService } from './ocr-service.mjs';
+import { handleV1Api } from './v1-handler.mjs';
 
 const bodyLimit = 2 * 1024 * 1024;
 const attachmentBodyLimit = 10 * 1024 * 1024;
@@ -108,6 +110,22 @@ function sendMutationResult(response, result, securityHeaders) {
 export function createApiHandler(database, securityHeaders, authOptions = {}) {
   const auth = createAuthService(database, authOptions);
   const attachmentStorage = authOptions.attachmentStorage || null;
+  const importJobService = createImportJobService(database);
+  const ocrService = attachmentStorage
+    ? createOcrService({
+        database,
+        attachmentStorage,
+        environment: authOptions.environment || process.env
+      })
+    : null;
+  setImmediate(() => {
+    importJobService.resumePending().catch((error) => {
+      console.error('Pending customer imports could not be resumed.', error);
+    });
+    ocrService?.resumePending().catch((error) => {
+      console.error('Pending OCR jobs could not be resumed.', error);
+    });
+  });
   const metrics = {
     startedAt: Date.now(),
     apiRequests: 0,
@@ -261,6 +279,20 @@ export function createApiHandler(database, securityHeaders, authOptions = {}) {
     if (mutationRequest && session.role === 'viewer') {
       sendJson(response, 403, { error: 'INSUFFICIENT_PERMISSION' }, securityHeaders);
       return true;
+    }
+
+    if (pathname.startsWith('/api/v1')) {
+      return handleV1Api({
+        advisorAccessUserId,
+        database,
+        importJobService,
+        ocrService,
+        pathname,
+        request,
+        response,
+        securityHeaders,
+        session
+      });
     }
 
     const attachmentMatch = pathname.match(/^\/api\/attachments(?:\/([^/]+))?$/);
@@ -558,43 +590,30 @@ export function createApiHandler(database, securityHeaders, authOptions = {}) {
         response,
         200,
         await database.getOrganizationState(session.organizationId, advisorAccessUserId),
-        securityHeaders
+        {
+          ...securityHeaders,
+          Deprecation: 'true',
+          Link: '</api/v1>; rel="successor-version"',
+          Sunset: 'Tue, 01 Dec 2026 00:00:00 GMT'
+        }
       );
       return true;
     }
 
     if (pathname === '/api/state' && request.method === 'PUT') {
-      try {
-        if (!['owner', 'manager'].includes(session.role)) {
-          sendJson(response, 403, { error: 'INSUFFICIENT_PERMISSION' }, securityHeaders);
-          return true;
-        }
-        if (!requireJson(request, response, securityHeaders)) return true;
-        const payload = await readJsonBody(request);
-        const validation = validateStatePayload(payload);
-        if (!validation.valid) {
-          sendJson(response, 422, { error: 'VALIDATION_FAILED', details: validation.errors }, securityHeaders);
-          return true;
-        }
-
-        const result = await database.replaceOrganizationState(
-          session.organizationId,
-          session.id,
-          payload,
-          payload.expectedRevision
-        );
-        if (result.conflict) {
-          sendJson(response, 409, {
-            error: 'REVISION_CONFLICT',
-            revision: result.revision
-          }, securityHeaders);
-          return true;
-        }
-
-        sendJson(response, 200, { status: 'saved', revision: result.revision }, securityHeaders);
-      } catch (error) {
-        sendCaughtError(response, error, securityHeaders, 'Whole-state update failed.');
+      if (!['owner', 'manager'].includes(session.role)) {
+        sendJson(response, 403, { error: 'INSUFFICIENT_PERMISSION' }, securityHeaders);
+        return true;
       }
+      sendJson(response, 410, {
+        error: 'STATE_WRITE_RETIRED',
+        replacement: '/api/v1/team-state'
+      }, {
+        ...securityHeaders,
+        Deprecation: 'true',
+        Link: '</api/v1>; rel="successor-version"',
+        Sunset: 'Tue, 01 Dec 2026 00:00:00 GMT'
+      });
       return true;
     }
 

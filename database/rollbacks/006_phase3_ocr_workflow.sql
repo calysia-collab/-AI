@@ -1,0 +1,5 @@
+BEGIN;
+DROP TABLE IF EXISTS ocr_corrections;
+DROP TABLE IF EXISTS ocr_fields;
+DROP TABLE IF EXISTS ocr_jobs;
+COMMIT;
