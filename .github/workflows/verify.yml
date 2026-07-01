@@ -33,7 +33,7 @@ jobs:
       SASHA_TEST_DATABASE_SSL: disable
       SASHA_TEST_DATABASE_URL: postgresql://sasha_test:sasha_test@127.0.0.1:5432/sasha_test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version-file: .node-version
